@@ -180,27 +180,88 @@ def test_reject_low_edge():
 
 
 def test_reject_wide_spread():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the spread gate."""
     a = CapitalAllocator()
     p = _liberal_params(max_spread_pct=0.02)
-    sig = _good_signal(spread=0.05)
+    sig = _good_signal(wallet_tier="STRONG", spread=0.05)
     d = a.evaluate_trade(sig, _good_state(), p)
     assert d.reason_code == "WIDE_SPREAD"
 
 
 def test_reject_low_liquidity():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the liquidity gate."""
     a = CapitalAllocator()
     p = _liberal_params(min_liquidity=5000)
-    sig = _good_signal(liquidity=100)
+    sig = _good_signal(wallet_tier="STRONG", liquidity=100)
     d = a.evaluate_trade(sig, _good_state(), p)
     assert d.reason_code == "LOW_LIQUIDITY"
 
 
 def test_reject_bad_orderbook_when_required():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the orderbook gate."""
     a = CapitalAllocator()
     p = _liberal_params(require_orderbook_quality=True)
     for q in ("UNTRADABLE", "BAD", "INSUFFICIENT_DATA"):
-        d = a.evaluate_trade(_good_signal(orderbook_quality=q), _good_state(), p)
+        d = a.evaluate_trade(_good_signal(wallet_tier="STRONG", orderbook_quality=q), _good_state(), p)
         assert d.reason_code == "BAD_ORDERBOOK", q
+
+
+# ============ B16/B17 ELITE-paper bypass contract lock ============
+# CRITIQUE: ces deux tests verrouillent le contract du bypass:
+#   _elite_paper_bypass = (wallet_tier == 'ELITE'
+#                          AND settings.paper_trading_enabled
+#                          AND NOT settings.live_enabled)
+# Si le bypass live se casse silencieusement, paper PnL ≠ live PnL et
+# le bot ouvrira en live des trades qu'il aurait dû reject (orderbook
+# manquant sur crypto 5-min → fills désastreux).
+
+
+def test_elite_paper_bypass_skips_data_quality_gates(monkeypatch):
+    """B16/B17 positif: ELITE + paper + live OFF → bypass actif sur spread/liquidity/orderbook."""
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "paper_trading_enabled", True)
+    monkeypatch.setattr(s, "live_enabled", False)
+
+    a = CapitalAllocator()
+    # Signal qui fail TOUS les data-quality gates
+    bad_sig = _good_signal(
+        wallet_tier="ELITE",
+        spread=0.50,            # WIDE_SPREAD si bypass off
+        liquidity=10,           # LOW_LIQUIDITY si bypass off
+        orderbook_quality="UNTRADABLE",  # BAD_ORDERBOOK si bypass off
+    )
+    p = _liberal_params(
+        max_spread_pct=0.02,
+        min_liquidity=1000,
+        require_orderbook_quality=True,
+    )
+    d = a.evaluate_trade(bad_sig, _good_state(), p)
+    # Bypass actif → ces 3 gates ignorées. La trade peut être accepted ou
+    # rejected pour autre raison (ex: late_entry), mais PAS sur ces 3 codes.
+    assert d.reason_code not in ("WIDE_SPREAD", "LOW_LIQUIDITY", "BAD_ORDERBOOK"), (
+        f"ELITE+paper bypass devrait skip data-quality gates, got {d.reason_code}"
+    )
+
+
+def test_elite_live_re_enables_data_quality_gates(monkeypatch):
+    """B16/B17 CRITIQUE: ELITE + live ON → bypass DÉSACTIVÉ, gates réactifs.
+
+    Si ce test fail, le bot prendra des trades live sur des markets sans
+    orderbook (crypto 5-min) → slippage/fills incontrôlés.
+    """
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "paper_trading_enabled", True)
+    monkeypatch.setattr(s, "live_enabled", True)  # LIVE ON → bypass off
+
+    a = CapitalAllocator()
+    bad_sig = _good_signal(wallet_tier="ELITE", liquidity=100)
+    p = _liberal_params(min_liquidity=5000)
+    d = a.evaluate_trade(bad_sig, _good_state(), p)
+    assert d.reason_code == "LOW_LIQUIDITY", (
+        f"En live, le bypass ELITE doit être OFF — gate liquidity doit reject, got {d.reason_code}"
+    )
 
 
 def test_accept_when_orderbook_check_disabled():

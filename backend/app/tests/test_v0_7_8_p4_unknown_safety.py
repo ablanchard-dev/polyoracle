@@ -84,16 +84,18 @@ def _signal(**kw):
 
 
 def test_unknown_category_rejected_at_50eur():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the small-cap unknown gate."""
     a = CapitalAllocator()
-    sig = _signal(category=None)
+    sig = _signal(wallet_tier="STRONG", category=None)
     d = a.evaluate_trade(sig, _state(50.0), _params())
     assert d.accepted is False
     assert d.reason_code == "UNKNOWN_CATEGORY"
 
 
 def test_unknown_category_rejected_at_100eur():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the small-cap unknown gate."""
     a = CapitalAllocator()
-    sig = _signal(category="Unknown")
+    sig = _signal(wallet_tier="STRONG", category="Unknown")
     d = a.evaluate_trade(sig, _state(100.0), _params())
     assert d.accepted is False
     assert d.reason_code == "UNKNOWN_CATEGORY"
@@ -114,8 +116,9 @@ def test_unknown_category_passes_at_500eur():
 
 
 def test_unknown_deadline_rejected_at_50eur():
+    """B16/B17 ELITE-paper bypass: wallet_tier='STRONG' to exercise the small-cap unknown gate."""
     a = CapitalAllocator()
-    sig = _signal(expected_holding_time_hours=None)
+    sig = _signal(wallet_tier="STRONG", expected_holding_time_hours=None)
     d = a.evaluate_trade(sig, _state(50.0), _params())
     assert d.accepted is False
     assert d.reason_code == "UNKNOWN_DEADLINE"

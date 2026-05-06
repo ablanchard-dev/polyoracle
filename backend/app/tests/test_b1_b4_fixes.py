@@ -132,10 +132,13 @@ def test_b1_score_gate_passes_when_score_above_min():
 
 
 def test_b1_score_gate_blocks_when_score_below_min():
-    """signal.liquidity_score=20 with gate=30 → LOW_LIQUIDITY (score path)."""
+    """signal.liquidity_score=20 with gate=30 → LOW_LIQUIDITY (score path).
+
+    wallet_tier='STRONG' to bypass the B16/B17 ELITE-paper data-quality skip.
+    """
     a = CapitalAllocator()
     p = _liberal_params(min_liquidity_score=30)
-    sig = _good_signal(liquidity_score=20, liquidity=99_999)  # legacy huge — score still wins
+    sig = _good_signal(wallet_tier="STRONG", liquidity_score=20, liquidity=99_999)
     d = a.evaluate_trade(sig, _good_state(), p)
     assert d.reason_code == "LOW_LIQUIDITY"
     assert d.reasoning.get("gate") == "score"
@@ -145,7 +148,7 @@ def test_b1_falls_back_to_legacy_when_score_missing():
     """No liquidity_score on signal → use legacy USD gate."""
     a = CapitalAllocator()
     p = _liberal_params(min_liquidity=1_000, min_liquidity_score=30)
-    sig = _good_signal(liquidity=500, liquidity_score=None)
+    sig = _good_signal(wallet_tier="STRONG", liquidity=500, liquidity_score=None)
     d = a.evaluate_trade(sig, _good_state(), p)
     assert d.reason_code == "LOW_LIQUIDITY"
     assert d.reasoning.get("gate") == "usd_notional_legacy"
@@ -155,7 +158,7 @@ def test_b1_legacy_only_when_preset_score_missing():
     """If preset has no min_liquidity_score, legacy gate applies even if signal has score."""
     a = CapitalAllocator()
     p = _liberal_params(min_liquidity=1_000, min_liquidity_score=None)
-    sig = _good_signal(liquidity=500, liquidity_score=80)
+    sig = _good_signal(wallet_tier="STRONG", liquidity=500, liquidity_score=80)
     d = a.evaluate_trade(sig, _good_state(), p)
     assert d.reason_code == "LOW_LIQUIDITY"
     assert d.reasoning.get("gate") == "usd_notional_legacy"
@@ -164,12 +167,15 @@ def test_b1_legacy_only_when_preset_score_missing():
 def test_b1_realistic_smoke_value_passes_paper_preset():
     """Median observed liquidity_score=19.38 in the smoke. Paper preset
     has min_liquidity_score=30, so 19 should fail. With raised score=35
-    it should pass."""
+    it should pass.
+
+    wallet_tier='STRONG' to bypass the B16/B17 ELITE-paper data-quality skip.
+    """
     a = CapitalAllocator()
     p = _liberal_params(min_liquidity_score=30)
-    fail_sig = _good_signal(liquidity_score=19.38)
+    fail_sig = _good_signal(wallet_tier="STRONG", liquidity_score=19.38)
     assert a.evaluate_trade(fail_sig, _good_state(), p).reason_code == "LOW_LIQUIDITY"
-    pass_sig = _good_signal(liquidity_score=35)
+    pass_sig = _good_signal(wallet_tier="STRONG", liquidity_score=35)
     assert a.evaluate_trade(pass_sig, _good_state(), p).accepted is True
 
 
