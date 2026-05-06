@@ -1,0 +1,57 @@
+# .env included on user request (private repo, no real secrets — only URLs + paper config)
+
+# All .db files ignored EXCEPT the live runtime DB (tracked via Git LFS)
+*.db
+!data/polyoracle.db
+*.sqlite
+*.db-wal
+*.db-shm
+
+# Runtime logs (rotated, regenerable)
+backend.dev.log
+backend.dev.err.log
+_auto_check_loop.log
+_run_v0_5_10_dense_scan.log
+
+# Python build artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Backend venv + tmp
+backend/.deps/
+backend/.deps_clean/
+backend/.tmp/
+backend/.venv/
+backend/.venv_test/
+backend/pytest_tmp*/
+.testdeps/
+
+# Frontend build artifacts (regenerable via npm install / npm run build)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Big regenerable data (cache, local backups, snapshots, replay DBs)
+data/cache/
+data/backups/
+data/snapshots/
+
+# Historic exports — keep latest cohort/validation, skip old version-tagged dumps
+data/exports/*_cache_*.jsonl
+data/exports/v0_5_12/
+data/exports/v0_7_0/
+data/exports/validated_paper_universe_v0_5_*.json
+data/exports/candidate_elite_validation_report_*_3000.json
+data/exports/candidate_elite_validation_report_*_dense.json
+data/exports/candidate_elite_validation_report_730d.json
+
+# Old orchestrator backups (logs + DB .bak files from prior smokes, regenerable)
+_backups_v0_7_8_dynamic_caps/
+backend/_backups_v0_7_8_smoke_pre/
+*.bak
+
+# Agent runtime state (not relevant for portability)
+.claude/

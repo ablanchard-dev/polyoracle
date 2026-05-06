@@ -1,0 +1,132 @@
+"""v0.7.8 Phase 8 — Observability endpoints for the UI cockpit.
+
+Exposes the latency tracker, adaptive close scheduler state, and
+resolver cache stats so the Next.js frontend can build a real-time
+dashboard.
+
+All endpoints are read-only and lightweight (no DB queries, just
+in-memory state). Safe to poll from the UI every 1-5s.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/observability", tags=["observability"])
+
+
+@router.get("/latency")
+def latency_status() -> dict[str, Any]:
+    """Per-path latency p50/p95/max + breach flags.
+
+    Used by the UI cockpit's Latency dashboard. Shows whether each
+    pipeline step is within its budget (Vision Lock §4)."""
+    from app.services.latency_tracker import (
+        LATENCY_BUDGET_MS,
+        get_tracker,
+    )
+    tracker = get_tracker()
+    paths_status = tracker.all_paths_status()
+    return {
+        "paths": {
+            name: {
+                **stats,
+                "budget_ms": LATENCY_BUDGET_MS.get(name),
+                "ratio": (
+                    stats["p95"] / LATENCY_BUDGET_MS[name]
+                    if name in LATENCY_BUDGET_MS and LATENCY_BUDGET_MS[name] > 0
+                    else None
+                ),
+            }
+            for name, stats in paths_status.items()
+        },
+        "budgets": LATENCY_BUDGET_MS,
+    }
+
+
+@router.get("/latency/report")
+def latency_report() -> dict[str, str]:
+    """Markdown latency report — for the UI's Daily Report tab."""
+    from app.services.latency_tracker import daily_report
+    return {"report_md": daily_report()}
+
+
+@router.get("/scheduler")
+def scheduler_status() -> dict[str, Any]:
+    """Adaptive close scheduler stats: registered positions, heap size."""
+    from app.services.adaptive_close_scheduler import (
+        BUCKET_CHECK_INTERVAL_S,
+        get_scheduler,
+    )
+    scheduler = get_scheduler()
+    return {
+        "registered_positions": scheduler.known_positions_count(),
+        "heap_size": scheduler.heap_size(),
+        "bucket_intervals_s": BUCKET_CHECK_INTERVAL_S,
+    }
+
+
+@router.get("/resolver")
+def resolver_status() -> dict[str, Any]:
+    """Market metadata resolver cache stats."""
+    from app.services.market_metadata_resolver import (
+        DYNAMIC_DATA_TTL_S,
+        NOT_FOUND_BLACKLIST_TTL_S,
+        STATIC_METADATA_TTL_S,
+        get_resolver,
+    )
+    resolver = get_resolver()
+    return {
+        "static_cache_size": len(resolver._static_cache),
+        "dynamic_cache_size": len(resolver._dynamic_cache),
+        "not_found_blacklist_size": len(resolver._not_found),
+        "ttl": {
+            "static_s": STATIC_METADATA_TTL_S,
+            "dynamic_s": DYNAMIC_DATA_TTL_S,
+            "not_found_s": NOT_FOUND_BLACKLIST_TTL_S,
+        },
+    }
+
+
+@router.post("/kill-switch-flatten")
+def kill_switch_flatten() -> dict[str, Any]:
+    """KILL SWITCH — flatten all open paper positions immediately.
+
+    For paper mode: closes all open positions at their entry price
+    (zero realized PnL). For live mode (Phase 7): would submit market
+    orders to flatten via CLOB.
+
+    Used by the UI's red 'KILL SWITCH' button. Idempotent — safe to
+    call multiple times.
+    """
+    from app.database import engine
+    from app.models.trade import PaperTrade
+    from app.services.paper_trading_engine import (
+        CLOSE_REASON_MANUAL,
+        _close_paper_with_reason,
+    )
+    from sqlmodel import Session, select
+
+    closed_ids = []
+    with Session(engine) as session:
+        rows = list(session.exec(
+            select(PaperTrade).where(PaperTrade.status == "open")
+        ))
+        for trade in rows:
+            try:
+                # Close at entry price = zero PnL = flatten safely
+                _close_paper_with_reason(
+                    session, trade,
+                    reason=CLOSE_REASON_MANUAL,
+                    exit_price=trade.average_price,
+                )
+                closed_ids.append(trade.id)
+            except Exception as e:
+                pass  # don't block other closes if one fails
+    return {
+        "closed_count": len(closed_ids),
+        "closed_ids": closed_ids,
+        "message": f"Flattened {len(closed_ids)} open paper positions",
+    }
