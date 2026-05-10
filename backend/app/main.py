@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
     bot,
+    debug,
     discovery,
     edge,
     health,
@@ -48,6 +49,10 @@ async def on_startup() -> None:
         pass
     except Exception:
         pass
+    # 2026-05-09 — auto-reclass cron retiré: tournerait à vide tant que B22
+    # (audit_at MFWR figé depuis 28-29 avril, voir spec.md) n'est pas résolu.
+    # À ré-activer une fois le mécanisme W+L incremental update implémenté
+    # (réutilisation des trades polling sans nouveaux API calls).
 
 
 app.include_router(health.router)
@@ -64,6 +69,7 @@ app.include_router(settings_routes.router)
 app.include_router(storage.router)
 app.include_router(logs.router)
 app.include_router(observability.router)
+app.include_router(debug.router)
 
 
 if __name__ == "__main__":

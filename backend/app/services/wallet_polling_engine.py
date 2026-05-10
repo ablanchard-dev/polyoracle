@@ -25,9 +25,15 @@ Lifecycle:
 Safety:
 
 * Rate-limited at module level via a token bucket
-  (``POLLING_RATE_LIMIT_CALLS_PER_SEC``, default 5).
-* Per-wallet poll interval (``POLLING_INTERVAL_SECONDS``, default 90 s)
-  is staggered uniformly across the pool so we never spike beyond
+  (``POLLING_RATE_LIMIT_CALLS_PER_SEC``, default 12 — calibrated 2026-05-06
+   from empirical test: Polymarket data-api throttles at 20/s, safe at 15/s,
+   12/s leaves 20% headroom).
+* Per-wallet poll interval — 2-lane:
+  - ELITE: ``POLLING_INTERVAL_ELITE_SECONDS`` (default 10 s) — fast lane
+    for the priority cohort. With 112 ELITE GOLD wallets / 10s = 11.2 calls/s
+    (sub-ceiling).
+  - non-ELITE: ``POLLING_INTERVAL_SECONDS`` (default 30 s) — slow lane.
+  Stagger uniform across the pool to avoid spikes beyond
   ``cohort_size / interval`` requests/s.
 * Hard refusal: if ``LIVE_ENABLED=true`` is observed at start time, the
   engine raises immediately. Paper-only path.
@@ -82,15 +88,15 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-POLLING_INTERVAL_SECONDS = env_int("POLLING_INTERVAL_SECONDS", 90)
+POLLING_INTERVAL_SECONDS = env_int("POLLING_INTERVAL_SECONDS", 30)
 # v0.7.8 — ELITE wallets get a tighter re-poll interval so 1MN/2MN
 # markets stay copy-tradable. With cohort 981 + rate 5/s the effective
 # full-cycle is ~196s; that means a wallet trade on a 60s market is
 # already resolved before our next poll. ELITE @ 30s + non-ELITE @ 90s
 # gives total ~4.5 calls/s (within rate limit) and fresh ELITE every
 # 30s — enough margin for 1MN markets.
-POLLING_INTERVAL_ELITE_SECONDS = env_int("POLLING_INTERVAL_ELITE_SECONDS", 30)
-POLLING_RATE_LIMIT_CALLS_PER_SEC = env_float("POLLING_RATE_LIMIT_CALLS_PER_SEC", 5.0)
+POLLING_INTERVAL_ELITE_SECONDS = env_int("POLLING_INTERVAL_ELITE_SECONDS", 10)
+POLLING_RATE_LIMIT_CALLS_PER_SEC = env_float("POLLING_RATE_LIMIT_CALLS_PER_SEC", 12.0)
 POLLING_FETCH_LIMIT = env_int("POLLING_FETCH_LIMIT", 50)
 # v0.7.2 B2 — Restart freshness clamp (default 30 min). When the
 # polling resumes after a pause, ``last_seen_ts`` may be hours old. We
@@ -307,7 +313,11 @@ class WalletPollingEngine:
             return cohort_csv  # back-compat: no session → no filter or priority
 
         try:
-            from app.services.capital_allocator import _resolve_tier
+            from app.services.capital_allocator import (
+                _resolve_tier,
+                classify_wr_bucket,
+                is_wallet_allowed_at_tier,
+            )
             from app.models.wallet import MarketFirstWalletRecord
             from sqlmodel import select as _select
             import math
@@ -316,11 +326,13 @@ class WalletPollingEngine:
             if capital_total is None:
                 allowed_statuses = ["ELITE", "STRONG"]
                 tier_name = "ANY"
+                _bucket_filter_active = False
             else:
                 rule = _resolve_tier(float(capital_total))
                 allowed_set = rule.get("allowed_tiers_intersect")
                 allowed_statuses = sorted(allowed_set) if allowed_set else ["ELITE", "STRONG"]
                 tier_name = rule["name"]
+                _bucket_filter_active = True
 
             # Fetch records, then sort in Python (avoids SQL alias issues).
             rows = session.exec(
@@ -328,6 +340,19 @@ class WalletPollingEngine:
                     MarketFirstWalletRecord.candidate_status.in_(allowed_statuses)
                 )
             ).all()
+
+            # v0.7.8 P6 — 12-tier refactor 2026-05-06: also filter by WR bucket.
+            # NANO/TINY/MICRO accept ELITE GOLD only; SMALL+ adds SILVER; ≥$10k
+            # adds BRONZE. STRONG only when GOLD bucket and tier ≥ MEDIUM.
+            if _bucket_filter_active:
+                rows = [
+                    r for r in rows
+                    if is_wallet_allowed_at_tier(
+                        r.candidate_status,
+                        r.resolved_market_win_rate,
+                        float(capital_total),
+                    )
+                ]
 
             def _priority(r: MarketFirstWalletRecord) -> float:
                 """Computed-at-query priority — higher = polled first.
@@ -796,10 +821,10 @@ class WalletPollingEngine:
         if not self._cohort:
             # v0.7.8 P6 — read capital_total from BotState so load_cohort
             # can apply the tier-specific wallet filter (SMALL → ELITE only).
+            # 2026-05-09: effective capital includes session-PnL → cohort auto-ramps.
             with Session(engine) as _cohort_session:
-                from app.models.bot import BotState as _BotState
-                _bot_state = _cohort_session.get(_BotState, 1)
-                _capital = float(_bot_state.paper_capital) if _bot_state and _bot_state.paper_capital is not None else None
+                from app.services.paper_trading_engine import compute_effective_paper_capital
+                _capital = compute_effective_paper_capital(_cohort_session)
                 self._cohort = self.load_cohort(
                     session=_cohort_session,
                     capital_total=_capital,
@@ -894,13 +919,13 @@ class WalletPollingEngine:
                 run_adaptive_close_iteration,
             )
             with Session(engine) as _session:
-                # v0.7.8 — bound per-iteration close work + tighter Gamma
-                # timeout so a slow API can't block the polling loop for
-                # minutes when many positions resolve simultaneously.
-                # Worst case now: 3 entries × 2 HTTP × 3s = ~18s instead
-                # of 12 × 2 × 10s = 240s.
+                # v0.7.8 P6 + 2026-05-06 polling 10s upgrade:
+                # Worst case must stay < polling interval (10s ELITE) to
+                # avoid B19 watchdog stall. max_entries=2 × 2 HTTP × 2s
+                # gamma_timeout = ~8s, fits in 10s budget with margin.
+                # Scaled down from (3, 3.0)=18s which broke the 10s polling.
                 result = run_adaptive_close_iteration(
-                    _session, max_entries=3, gamma_timeout=3.0,
+                    _session, max_entries=2, gamma_timeout=2.0,
                 )
                 if result.get("closed", 0) > 0:
                     self._close_loop_total_closed += int(result["closed"])
@@ -982,10 +1007,10 @@ class WalletPollingEngine:
             return self.status()
         self._stop_event = asyncio.Event()
         # v0.7.8 P6 — capital-tier aware cohort + priority ORDER BY.
+        # 2026-05-09: effective capital includes session-PnL → cohort auto-ramps.
         with Session(engine) as _cohort_session:
-            from app.models.bot import BotState as _BotState
-            _bot_state = _cohort_session.get(_BotState, 1)
-            _capital = float(_bot_state.paper_capital) if _bot_state and _bot_state.paper_capital is not None else None
+            from app.services.paper_trading_engine import compute_effective_paper_capital
+            _capital = compute_effective_paper_capital(_cohort_session)
             self._cohort = self.load_cohort(
                 session=_cohort_session,
                 capital_total=_capital,
@@ -1113,6 +1138,7 @@ class WalletPollingEngine:
                 "session_errors": self._errors_session,
                 "cohort_size": len(self._cohort),
                 "interval_seconds": POLLING_INTERVAL_SECONDS,
+                "interval_seconds_elite": POLLING_INTERVAL_ELITE_SECONDS,
                 "rate_limit_calls_per_sec": POLLING_RATE_LIMIT_CALLS_PER_SEC,
             }
 

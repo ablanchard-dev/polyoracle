@@ -160,8 +160,13 @@ def _classify(resolved: int, win_rate: float) -> str:
 
 def _evaluate_for_promotion(row, current_status: str) -> Optional[ReclassDecision]:
     """Apply ELITE promotion criteria. Returns ReclassDecision if action
-    needed, None if status unchanged."""
-    resolved = int(row.resolved_markets_traded or 0)
+    needed, None if status unchanged.
+
+    2026-05-09 — B1 fix: use REAL sample (resolved_winning + resolved_losing),
+    not resolved_markets_traded which inflates by including unresolved scalped
+    markets. spec.md spec: 'sample = wins + losses CONFIRMÉS'.
+    """
+    resolved = int((row.resolved_winning_markets or 0) + (row.resolved_losing_markets or 0))
     win_rate = float(row.resolved_market_win_rate or 0)
 
     target = _classify(resolved, win_rate)
@@ -190,8 +195,11 @@ def _evaluate_for_promotion(row, current_status: str) -> Optional[ReclassDecisio
 
 def _evaluate_for_demotion(row, current_status: str) -> Optional[ReclassDecision]:
     """Apply demotion criteria with hysteresis (looser than promotion to
-    prevent flapping ELITE↔STRONG)."""
-    resolved = int(row.resolved_markets_traded or 0)
+    prevent flapping ELITE↔STRONG).
+
+    2026-05-09 — B1 fix: use REAL sample (W+L confirmés), not resolved_markets_traded.
+    """
+    resolved = int((row.resolved_winning_markets or 0) + (row.resolved_losing_markets or 0))
     win_rate = float(row.resolved_market_win_rate or 0)
 
     if current_status == "ELITE":
@@ -301,7 +309,10 @@ def run_weekly_reclass(
             if promote is not None:
                 result.promoted.append(promote)
                 if not dry_run:
-                    row.candidate_status = "ELITE"
+                    # 2026-05-09 fix: was hardcoding "ELITE" — promotions to STRONG
+                    # were silently marked ELITE, polluting the cohort. Use the
+                    # evaluator's target (STRONG or ELITE) which respects W+L gate.
+                    row.candidate_status = promote.new_status
                     session.add(row)
                 continue
             demote = _evaluate_for_demotion(row, row.candidate_status or "")
@@ -398,16 +409,16 @@ def reclass_summary_md(result: ReclassResult) -> str:
         lines.append("\n## Promotions (first 20)")
         for d in result.promoted[:20]:
             lines.append(
-                f"- `{d.address[:14]}` {d.previous_status} → ELITE: "
-                f"comp={d.composite_score:.1f}, resolved={d.resolved_markets}, "
+                f"- `{d.address[:14]}` {d.previous_status} → {d.new_status}: "
+                f"comp={d.composite_score:.1f}, W+L={d.resolved_markets}, "
                 f"win={d.win_rate:.3f}"
             )
     if result.demoted:
         lines.append("\n## Demotions (first 20)")
         for d in result.demoted[:20]:
             lines.append(
-                f"- `{d.address[:14]}` ELITE → STRONG: "
-                f"comp={d.composite_score:.1f}, resolved={d.resolved_markets}, "
+                f"- `{d.address[:14]}` {d.previous_status} → {d.new_status}: "
+                f"comp={d.composite_score:.1f}, W+L={d.resolved_markets}, "
                 f"win={d.win_rate:.3f}"
             )
     return "\n".join(lines)

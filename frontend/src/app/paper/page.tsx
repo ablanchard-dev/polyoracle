@@ -43,7 +43,7 @@ export default function PaperPage() {
     <main className="mx-auto max-w-7xl px-5 py-6">
       <header className="mb-6">
         <h1 className="text-2xl font-semibold">Paper Trading</h1>
-        <p className="text-sm text-slate-400">Auto paper-trades opened only when signal decision is PAPER_TRADE and risk filters pass.</p>
+        <p className="text-sm text-slate-400">Auto paper-trades cohort-tier-aware (NANO→SMALL = ELITE GOLD+SILVER). PnL gonflé par <code className="rounded bg-slate-800 px-1">_elite_paper_bypass</code> B16/B17 — slippage non modélisé en paper.</p>
       </header>
       {error ? <div className="mb-4 rounded border border-danger bg-danger/10 p-3 text-sm text-red-100">{error}</div> : null}
 
@@ -54,18 +54,31 @@ export default function PaperPage() {
         <Stat label="Weekly PnL" value={money.format(perf?.weekly_pnl ?? 0)} />
         <Stat label="Open positions" value={`${perf?.open_positions ?? 0}`} />
         <Stat label="Closed trades" value={`${perf?.closed_trades ?? 0}`} />
-        <Stat label="Win rate" value={`${((perf?.win_rate ?? 0) * 100).toFixed(0)}%`} />
+        <Stat label="Win rate" value={`${((perf?.win_rate ?? 0) * 100).toFixed(1)}%`} tone={(perf?.win_rate ?? 0) >= 0.90 ? "good" : (perf?.win_rate ?? 0) >= 0.85 ? "warn" : "bad"} />
         <Stat label="Auto trading" value={perf?.auto_enabled ? "ON" : "OFF"} tone={perf?.auto_enabled ? "good" : "warn"} />
       </div>
 
       <section className="mt-6 rounded border border-line bg-panel p-4">
-        <h2 className="mb-3 text-lg font-semibold">Open positions</h2>
+        <h2 className="mb-3 text-lg font-semibold">Open positions ({positions.length})</h2>
         <PositionTable rows={positions} />
       </section>
 
       <section className="mt-6 rounded border border-line bg-panel p-4">
-        <h2 className="mb-3 text-lg font-semibold">All paper trades</h2>
-        <PositionTable rows={trades} />
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Closed trades ({trades.filter(t => t.status === "closed").length})</h2>
+          <span className="text-xs text-slate-400">Triés par closed_at descending</span>
+        </div>
+        <PositionTable rows={trades.filter(t => t.status === "closed").slice(0, 100)} />
+      </section>
+
+      <section className="mt-6 rounded border border-line bg-panel p-4">
+        <h2 className="mb-3 text-lg font-semibold">Notes smoke / paper</h2>
+        <ul className="space-y-2 text-sm text-slate-300">
+          <li>• Le bot ouvre des trades uniquement si <code className="rounded bg-slate-800 px-1">candidate_status</code> + WR bucket compatibles avec le tier capital actuel (cf. /control panel).</li>
+          <li>• PaperTradingEngine lit <code className="rounded bg-slate-800 px-1">BotState.paper_capital</code> en DB (P5-A fix), pas <code className="rounded bg-slate-800 px-1">Settings.paper_starting_capital</code>.</li>
+          <li>• En paper, <code className="rounded bg-slate-800 px-1">_elite_paper_bypass</code> skip les data-quality gates (orderbook/liquidity/spread/copyable_edge) pour ELITE — désactivé en live.</li>
+          <li>• Pour lancer un smoke 60min : <code className="rounded bg-slate-800 px-1">polyoracle smoke 60</code> dans le terminal.</li>
+        </ul>
       </section>
     </main>
   );

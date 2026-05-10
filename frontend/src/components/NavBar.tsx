@@ -20,7 +20,7 @@ export function NavBar() {
   return (
     <nav className="border-b border-line bg-[#0a0d12]">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-1 px-5 py-2 text-sm">
-        <span className="mr-3 text-xs font-semibold uppercase tracking-wide text-accent">POLYORACLE v0.4</span>
+        <span className="mr-3 text-xs font-semibold uppercase tracking-wide text-accent">POLYORACLE v0.7.8 P6</span>
         {links.map((link) => {
           const active = pathname === link.href;
           return (

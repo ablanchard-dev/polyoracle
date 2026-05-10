@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models.signal import Signal
@@ -44,12 +45,24 @@ class EdgeMetrics:
 class EdgeValidationEngine:
     def __init__(self, session: Session) -> None:
         self.session = session
+        # 2026-05-07 leak fix: cache per-instance (one engine per request via
+        # FastAPI Depends(get_session)). Without this cache, metrics() calls
+        # closed_trades() 6+ times → 6× full table load (140k rows) per request.
+        # Frontend hits /edge/report every 10s → MB/s leak.
+        self._cached_trades: list[PaperTrade] | None = None
+        self._cached_trade_audits: list[TradeAuditRecord] | None = None
+        self._cached_wallet_audits: list[WalletAudit] | None = None
+        self._cached_signals: list[Signal] | None = None
+        self._cached_wallet_status_index: dict[str, dict[str, Any]] | None = None
 
     def trades(self) -> list[PaperTrade]:
+        if self._cached_trades is not None:
+            return self._cached_trades
         try:
-            return list(self.session.exec(select(PaperTrade)).all())
+            self._cached_trades = list(self.session.exec(select(PaperTrade)).all())
         except Exception:
-            return []
+            self._cached_trades = []
+        return self._cached_trades
 
     def closed_trades(self) -> list[PaperTrade]:
         return [trade for trade in self.trades() if trade.status == "closed"]
@@ -190,13 +203,23 @@ class EdgeValidationEngine:
         }
 
     def _wallet_status_index(self) -> dict[str, dict[str, Any]]:
-        """Snapshot of MarketFirstWalletRecord keyed by lowercase address so the
-        risk-mode projections can decide which audits each profile would have
-        accepted at the time of the trade."""
+        # 2026-05-07 leak fix: was loading ALL 239k MFWR per /edge/report hit.
+        # Filter to addresses present in the audit window (max 1000 → ~hundreds unique).
+        if self._cached_wallet_status_index is not None:
+            return self._cached_wallet_status_index
         index: dict[str, dict[str, Any]] = {}
+        addresses = {(a.wallet_address or "").lower() for a in self._trade_audits()}
+        addresses.discard("")
+        if not addresses:
+            self._cached_wallet_status_index = index
+            return index
         try:
-            records = list(self.session.exec(select(MarketFirstWalletRecord)).all())
+            stmt = select(MarketFirstWalletRecord).where(
+                func.lower(MarketFirstWalletRecord.address).in_(addresses)
+            )
+            records = list(self.session.exec(stmt).all())
         except Exception:
+            self._cached_wallet_status_index = index
             return index
         for record in records:
             index[record.address.lower()] = {
@@ -204,6 +227,7 @@ class EdgeValidationEngine:
                 "win_rate_confidence": record.win_rate_confidence,
                 "resolved_markets_traded": record.resolved_markets_traded,
             }
+        self._cached_wallet_status_index = index
         return index
 
     def _capital_scenario_strategy(
@@ -320,22 +344,43 @@ class EdgeValidationEngine:
     # ---------------- internals ----------------
 
     def _trade_audits(self) -> list[TradeAuditRecord]:
+        # 2026-05-07 leak fix: cache + LIMIT to last 1000 records.
+        # Old version loaded ALL tradeauditrecord (140k+ rows) per call,
+        # called 4-5x in metrics() → 700k row loads per /edge/report.
+        if self._cached_trade_audits is not None:
+            return self._cached_trade_audits
         try:
-            return list(self.session.exec(select(TradeAuditRecord)).all())
+            stmt = (
+                select(TradeAuditRecord)
+                .order_by(TradeAuditRecord.audited_at.desc())
+                .limit(1000)
+            )
+            self._cached_trade_audits = list(self.session.exec(stmt).all())
         except Exception:
-            return []
+            self._cached_trade_audits = []
+        return self._cached_trade_audits
 
     def _wallet_audits(self) -> list[WalletAudit]:
+        if self._cached_wallet_audits is not None:
+            return self._cached_wallet_audits
         try:
-            return list(self.session.exec(select(WalletAudit)).all())
+            self._cached_wallet_audits = list(self.session.exec(select(WalletAudit)).all())
         except Exception:
-            return []
+            self._cached_wallet_audits = []
+        return self._cached_wallet_audits
 
     def _signals(self) -> list[Signal]:
+        # 2026-05-07 leak fix: cache + LIMIT 1000 most recent. Was loading all
+        # 138k Signal rows per call, called from compare_strategies on every
+        # /edge/report hit (10s polling) → ~MB/s leak.
+        if self._cached_signals is not None:
+            return self._cached_signals
         try:
-            return list(self.session.exec(select(Signal)).all())
+            stmt = select(Signal).order_by(Signal.created_at.desc()).limit(1000)
+            self._cached_signals = list(self.session.exec(stmt).all())
         except Exception:
-            return []
+            self._cached_signals = []
+        return self._cached_signals
 
     def _strategy_summary(self, audits: list[TradeAuditRecord], predicate) -> dict[str, float]:
         filtered = [audit for audit in audits if predicate(audit)]

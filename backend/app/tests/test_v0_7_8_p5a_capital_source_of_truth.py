@@ -76,12 +76,15 @@ def test_engine_capital_used_in_allocator_evaluate():
         session.commit()
 
         engine = PaperTradingEngine(session)
-        # v0.7.8 P6 LOCKED 2026-05-05 — at $100 (SMALL): ELITE only.
+        # v0.7.8 P6 — 12-tier refactor 2026-05-06: at $100 → NANO (ELITE GOLD only).
         assert engine.paper_capital == 100.0
         from app.services.capital_allocator import _resolve_tier
         tier = _resolve_tier(engine.paper_capital)
-        assert tier["name"] == "SMALL"
+        assert tier["name"] == "NANO"
         assert tier["allowed_tiers_intersect"] == frozenset({"ELITE"})
+        # New 12-tier spec: NANO → ELITE GOLD only, no STRONG.
+        assert tier["allowed_elite_buckets"] == frozenset({"GOLD"})
+        assert tier["allowed_strong_buckets"] == frozenset()
 
 
 def test_capital_value_stable_within_engine_lifetime():

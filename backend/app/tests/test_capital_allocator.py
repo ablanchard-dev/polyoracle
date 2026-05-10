@@ -471,8 +471,9 @@ def test_dynamic_thresholds_at_50_euros_smalltier_elite_only():
     assert eff.max_open_positions == 12  # SMALL cap
 
 
-def test_dynamic_thresholds_at_500_euros_mediumtier_balanced():
-    """At 500 USD (MEDIUM tier): ELITE+STRONG, max_pos=20, balanced posture."""
+def test_dynamic_thresholds_at_500_usd_small_tier():
+    """v0.7.8 P6 12-tier refactor 2026-05-06: at $500 → SMALL tier
+    (ELITE GOLD+SILVER only, no STRONG). max_pos=32."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG", "CANDIDATE_ELITE"}),
@@ -481,38 +482,57 @@ def test_dynamic_thresholds_at_500_euros_mediumtier_balanced():
         max_open_positions=None,
     )
     eff = compute_dynamic_thresholds(500.0, base)
-    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})  # CANDIDATE_ELITE intersected out
-    assert eff.max_open_positions == 20  # MEDIUM cap
+    # SMALL tier: STRONG NOT in allowed_tiers_intersect → intersected out
+    assert eff.allowed_tiers == frozenset({"ELITE"})
+    assert eff.max_open_positions == 32  # SMALL cap
 
 
-def test_dynamic_thresholds_at_5000_euros_largetier_diversified():
-    """v0.7.8 P6 LOCKED: at 5000 USD (LARGE tier): ELITE+STRONG, max_pos=40.
-    STRONG continues from MEDIUM through LARGE (diversification active).
-    HUGE (≥$50k) is where ELITE-only kicks back in (institutional)."""
+def test_dynamic_thresholds_at_5000_usd_xl_tier():
+    """v0.7.8 P6 12-tier refactor 2026-05-06: at $5000 → XL tier
+    (ELITE GOLD+SILVER + STRONG GOLD overflow). max_pos=110."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG"}),
         min_ev_lb=0.02,
         min_copyable_edge=0.40,
-        max_open_positions=100,
+        max_open_positions=200,
     )
     eff = compute_dynamic_thresholds(5_000.0, base)
     assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
-    assert eff.max_open_positions == 40
+    assert eff.max_open_positions == 110
 
 
-def test_dynamic_thresholds_at_50000_euros_huge_tier_institutional():
-    """v0.7.8 P6 LOCKED: at $50k (HUGE tier): ELITE only (institutional)."""
+def test_dynamic_thresholds_at_60000_usd_giga_tier():
+    """v0.7.8 P6 12-tier refactor 2026-05-06: at $60k → GIGA tier
+    (ELITE all + STRONG GOLD overflow). max_pos=300.
+    HUGE (≥$64k) is where STRONG gets filtered out (preservation)."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG"}),
         min_ev_lb=0.02,
         min_copyable_edge=0.40,
-        max_open_positions=100,
+        max_open_positions=400,
     )
     eff = compute_dynamic_thresholds(60_000.0, base)
+    # GIGA still allows STRONG GOLD overflow
+    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
+    assert eff.max_open_positions == 300
+
+
+def test_dynamic_thresholds_at_70000_usd_huge_tier_preservation():
+    """v0.7.8 P6 12-tier refactor 2026-05-06: at $70k → HUGE tier
+    (ELITE only, preservation). max_pos=400."""
+    base = _liberal_params(
+        capital_aware_thresholds=True,
+        allowed_tiers=frozenset({"ELITE", "STRONG"}),
+        min_ev_lb=0.02,
+        min_copyable_edge=0.40,
+        max_open_positions=600,
+    )
+    eff = compute_dynamic_thresholds(70_000.0, base)
+    # HUGE: STRONG filtered out (preservation)
     assert eff.allowed_tiers == frozenset({"ELITE"})
-    assert eff.max_open_positions == 75
+    assert eff.max_open_positions == 400
 
 
 def test_capital_aware_overrides_base_params_when_tighter():
@@ -574,9 +594,10 @@ def test_capital_aware_strong_rejected_at_small_capital_v0_7_8_p6():
     )
 
 
-def test_capital_aware_strong_passes_at_medium_and_large_capital_v0_7_8_p6():
-    """v0.7.8 P6 final — STRONG passes at MEDIUM ($500-5k) and LARGE
-    ($5k-50k) but rejected at HUGE (≥$50k institutional preservation)."""
+def test_capital_aware_strong_passes_at_medium_through_giga_v0_7_8_p6():
+    """v0.7.8 P6 12-tier refactor 2026-05-06 — STRONG GOLD overflow allowed
+    at MEDIUM ($1k+), LARGE, XL, XXL, ELITE_OPEN, GIGA. Rejected at HUGE
+    (≥$64k, preservation) and INST."""
     a = CapitalAllocator()
     base = _liberal_params(
         capital_aware_thresholds=True,
@@ -584,24 +605,24 @@ def test_capital_aware_strong_passes_at_medium_and_large_capital_v0_7_8_p6():
         min_ev_lb=0.02,
     )
     sig = _good_signal(wallet_tier="STRONG", ev_lower_bound=0.20)
-    # MEDIUM — STRONG passes
-    state_medium = _good_state(capital_total=1000, capital_available=1000)
-    d_medium = a.evaluate_trade(sig, state_medium, base)
-    assert d_medium.reason_code != "WALLET_TIER", (
-        f"STRONG must pass at MEDIUM ; got {d_medium.reason_code}"
-    )
-    # LARGE — STRONG passes
-    state_large = _good_state(capital_total=10_000, capital_available=10_000)
-    d_large = a.evaluate_trade(sig, state_large, base)
-    assert d_large.reason_code != "WALLET_TIER", (
-        f"STRONG must pass at LARGE ; got {d_large.reason_code}"
-    )
-    # HUGE — STRONG rejected (institutional)
-    state_huge = _good_state(capital_total=60_000, capital_available=60_000)
-    d_huge = a.evaluate_trade(sig, state_huge, base)
-    assert d_huge.reason_code == "WALLET_TIER", (
-        f"STRONG must be rejected at HUGE ; got {d_huge.reason_code}"
-    )
+    # MEDIUM ($1k) — STRONG passes (overflow GOLD allowed)
+    d_medium = a.evaluate_trade(sig, _good_state(capital_total=1500, capital_available=1500), base)
+    assert d_medium.reason_code != "WALLET_TIER", f"STRONG must pass at MEDIUM ; got {d_medium.reason_code}"
+    # XL ($5k) — STRONG passes
+    d_xl = a.evaluate_trade(sig, _good_state(capital_total=5_000, capital_available=5_000), base)
+    assert d_xl.reason_code != "WALLET_TIER", f"STRONG must pass at XL ; got {d_xl.reason_code}"
+    # ELITE_OPEN ($15k) — STRONG passes
+    d_eo = a.evaluate_trade(sig, _good_state(capital_total=15_000, capital_available=15_000), base)
+    assert d_eo.reason_code != "WALLET_TIER", f"STRONG must pass at ELITE_OPEN ; got {d_eo.reason_code}"
+    # GIGA ($40k) — STRONG passes
+    d_giga = a.evaluate_trade(sig, _good_state(capital_total=40_000, capital_available=40_000), base)
+    assert d_giga.reason_code != "WALLET_TIER", f"STRONG must pass at GIGA ; got {d_giga.reason_code}"
+    # HUGE ($80k) — STRONG rejected (preservation)
+    d_huge = a.evaluate_trade(sig, _good_state(capital_total=80_000, capital_available=80_000), base)
+    assert d_huge.reason_code == "WALLET_TIER", f"STRONG must be rejected at HUGE ; got {d_huge.reason_code}"
+    # INST ($150k) — STRONG rejected
+    d_inst = a.evaluate_trade(sig, _good_state(capital_total=150_000, capital_available=150_000), base)
+    assert d_inst.reason_code == "WALLET_TIER", f"STRONG must be rejected at INST ; got {d_inst.reason_code}"
 
 
 def test_capital_aware_evaluate_at_low_capital_allows_top_elite():
@@ -739,10 +760,12 @@ def test_capital_50_cannot_ignore_min_order_capital_constraint():
 
 
 def test_capital_500_paper_viable_with_min_order():
+    """At $500 (SMALL tier in 12-tier refactor): ELITE GOLD+SILVER only, no STRONG.
+    Test ELITE wallet (overrides ELITE-paper bypass via paper_trading_enabled in env)."""
     a = CapitalAllocator()
     p = _liberal_params(min_stake=5.0, capital_aware_thresholds=True)
     state = _good_state(capital_total=500, capital_available=500)
-    d = a.evaluate_trade(_good_signal(ev_lower_bound=0.08, wallet_tier="STRONG"), state, p)
+    d = a.evaluate_trade(_good_signal(ev_lower_bound=0.08, wallet_tier="ELITE"), state, p)
     assert d.accepted is True
     assert d.sizing >= 5.0
 

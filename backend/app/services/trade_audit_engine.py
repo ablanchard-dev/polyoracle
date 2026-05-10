@@ -526,15 +526,24 @@ class TradeAuditEngine:
         self.session.commit()
 
     def stats(self) -> dict[str, Any]:
-        audits = list(self.session.exec(select(TradeAuditRecord)).all())
-        decisions: dict[str, int] = defaultdict(int)
-        for audit in audits:
-            decisions[audit.decision] += 1
+        # 2026-05-07 — leak fix: use SQL aggregates instead of loading all rows.
+        # Old version did `.all()` on tradeauditrecord (140k+ rows) → 280 MB/min leak.
+        from sqlalchemy import func
+        audited_count = self.session.exec(
+            select(func.count(TradeAuditRecord.id))
+        ).one()
+        decision_rows = self.session.exec(
+            select(TradeAuditRecord.decision, func.count(TradeAuditRecord.id))
+            .group_by(TradeAuditRecord.decision)
+        ).all()
+        decisions = {row[0] or "UNKNOWN": int(row[1]) for row in decision_rows}
+        clusters_count = self.session.exec(select(func.count(TradeCluster.id))).one()
+        smart_events_count = self.session.exec(select(func.count(SmartMoneyEvent.id))).one()
         return {
-            "audited_count": len(audits),
-            "decision_breakdown": dict(decisions),
-            "clusters": len(self.list_clusters(limit=10_000)),
-            "smart_money_events": len(self.list_smart_money_events(limit=10_000)),
+            "audited_count": int(audited_count) if audited_count is not None else 0,
+            "decision_breakdown": decisions,
+            "clusters": int(clusters_count) if clusters_count is not None else 0,
+            "smart_money_events": int(smart_events_count) if smart_events_count is not None else 0,
         }
 
     def list_no_trade_decisions(self, limit: int = 200) -> list[NoTradeDecision]:

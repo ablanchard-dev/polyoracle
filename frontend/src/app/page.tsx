@@ -85,6 +85,12 @@ export default function DashboardPage() {
   }
 
   async function runAction(action: "start" | "pause" | "stop" | "kill-switch") {
+    // Confirmation modals for destructive actions (G — defensive UX 2026-05-06).
+    if (action === "kill-switch") {
+      if (!confirm("KILL SWITCH active : ferme TOUTES les positions paper et bloque le redémarrage du bot jusqu'à reset manuel.\n\nConfirmer ?")) return;
+    } else if (action === "stop") {
+      if (!confirm("STOP : interrompt le polling. Positions ouvertes non fermées.\n\nConfirmer ?")) return;
+    }
     setBusy(true);
     try {
       const result = await postBotAction(action);
@@ -111,7 +117,7 @@ export default function DashboardPage() {
       <section className="border-b border-line bg-[#0c0f15]">
         <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="text-sm font-semibold uppercase tracking-wide text-accent">POLYORACLE v0.4 smart money audit</div>
+            <div className="text-sm font-semibold uppercase tracking-wide text-accent">POLYORACLE v0.7.8 P6 — smart-money copy-trading</div>
             <h1 className="mt-2 text-3xl font-semibold text-white">Trading Research Cockpit</h1>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -165,7 +171,7 @@ export default function DashboardPage() {
             <div className="mb-3 text-sm font-semibold text-slate-200">Risk Alerts</div>
             <div className="space-y-3 text-sm">
               <div className="rounded border border-line bg-slate-900 p-3">Live execution disabled until compliance and manual confirmation are configured.</div>
-              <div className="rounded border border-line bg-slate-900 p-3">Auto paper-trade only opens when wallet tier ≥ STRONG and copyable edge ≥ {settings?.min_signal_score ?? 70}.</div>
+              <div className="rounded border border-line bg-slate-900 p-3">Wallet filter capital-tier-aware: NANO→SMALL = ELITE GOLD+SILVER (wr≥95%); ≥$10k adds BRONZE. STRONG GOLD overflow only ≥$1k.</div>
               <div className="rounded border border-line bg-slate-900 p-3">Kill switch prevents restart until operator review.</div>
             </div>
           </div>

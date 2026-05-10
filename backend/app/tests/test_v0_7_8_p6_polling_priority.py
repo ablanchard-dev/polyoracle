@@ -1,22 +1,24 @@
-"""v0.7.8 P6 — polling cohort tier-aware + priority ORDER BY tests.
+"""v0.7.8 P6 — polling cohort tier-aware + WR bucket filter tests.
 
-Operator rule (2026-05-05):
-- SMALL (<$500) : ELITE only — no STRONG in tradable polling
-- MEDIUM/LARGE  : ELITE + STRONG (STRONG_OVERFLOW gate post-smoke)
-- HUGE (≥$50k)  : ELITE only (institutional)
+12-tier refactor 2026-05-06 (operator spec):
+- NANO/TINY/MICRO (<$500)  : ELITE GOLD only (wr ≥ 0.99)
+- SMALL (<$1k)             : ELITE GOLD + SILVER (wr ≥ 0.95)
+- MEDIUM-XXL ($1k-9.99k)   : ELITE GOLD+SILVER + STRONG GOLD overflow
+- ELITE_OPEN (≥$10k)       : ELITE all (GOLD+SILVER+BRONZE) + STRONG GOLD overflow
+- HUGE (≥$64k) / INST      : ELITE all only (preservation, no STRONG)
 
 Priority within ELITE pool (computed-at-query):
 - GOLD active (99-100% wr) first
-- 95-99% active
-- 90-95% active
+- 95-99% active (SILVER)
+- 90-95% active (BRONZE)
 - semi/inactive ELITE in slow lane (NOT removed from cohort)
 
 Tests verify:
-1. SMALL capital → cohort excludes STRONG
-2. MEDIUM/LARGE → cohort includes STRONG
-3. GOLD active polled before lower-WR ELITE
-4. Inactive ELITE stays in cohort but ranked low
-5. Promotion candidates (STRONG ≥70 W+L, ≥0.90 wr) NOT in SMALL polling
+1. NANO capital → cohort = ELITE GOLD only
+2. ELITE_OPEN → cohort includes all WR buckets + priority order
+3. MEDIUM → STRONG GOLD overflow allowed
+4. Inactive ELITE in same bucket stays in cohort (slow lane)
+5. STRONG SILVER/BRONZE never polled (overflow GOLD-only)
 """
 
 from __future__ import annotations
@@ -93,15 +95,16 @@ def _seed_mfwr(session: Session, *, gold_active=3, mid_active=3, low_active=3,
             resolved_market_win_rate=0.945,
             recent_activity_score=10.0,  # very inactive
         ))
-    # STRONG that meet overflow criteria (≥70 W+L, ≥0.90 wr) — should NOT be in SMALL cohort
+    # STRONG GOLD only — operator spec 2026-05-06: overflow GOLD-only.
+    # STRONG SILVER/BRONZE never enter cohort regardless of capital.
     for i in range(strong_overflow):
         rows.append(MarketFirstWalletRecord(
             address=f"0xstrong_overflow_{i:04d}",
             candidate_status="STRONG",
             resolved_markets_traded=80,
-            resolved_winning_markets=75,
-            resolved_losing_markets=5,
-            resolved_market_win_rate=0.937,
+            resolved_winning_markets=80,
+            resolved_losing_markets=0,
+            resolved_market_win_rate=0.995,  # GOLD bucket
             recent_activity_score=80.0,
         ))
     # DROPPED — never in cohort
@@ -121,8 +124,10 @@ def _seed_mfwr(session: Session, *, gold_active=3, mid_active=3, low_active=3,
     return rows
 
 
-def test_small_capital_loads_only_elite_p6(tmp_path):
-    """At SMALL (<$500), cohort must exclude STRONG. Operator rule."""
+def test_nano_capital_loads_only_elite_gold_p6(tmp_path):
+    """At NANO (<$200), cohort must include ELITE GOLD only (wr ≥ 0.99).
+    SILVER/BRONZE/STRONG/DROPPED all excluded.
+    """
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -130,23 +135,23 @@ def test_small_capital_loads_only_elite_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv,
-            session=session,
-            capital_total=108.0,  # $108 = SMALL tier
+            path=csv, session=session, capital_total=108.0,  # $108 = NANO tier
         )
 
         assert len(cohort) > 0
-        # No STRONG / DROPPED in cohort
+        # Only GOLD addresses (gold_*) in cohort. mid (SILVER) / low (BRONZE) /
+        # inactive (BRONZE 0.945) / strong / dropped all excluded.
         for addr in cohort:
-            assert "strong" not in addr.lower()
-            assert "dropped" not in addr.lower()
-        # All ELITE (incl inactive) should be present
-        elite_count = sum(1 for a in cohort if "elite" in a.lower() or "gold" in a.lower() or "mid" in a.lower() or "low" in a.lower() or "inactive" in a.lower())
-        assert elite_count == 11  # 3 GOLD + 3 mid + 3 low + 2 inactive = 11
+            assert "gold" in addr.lower(), (
+                f"NANO cohort should only contain ELITE GOLD, got {addr}"
+            )
+        assert len(cohort) == 3  # only 3 gold_active wallets
 
 
-def test_gold_active_polled_before_lower_wr_p6(tmp_path):
-    """GOLD active (99-100% wr, active) must be polled BEFORE 95-99% / 90-95%."""
+def test_elite_open_polls_all_wr_buckets_in_priority_order_p6(tmp_path):
+    """At ELITE_OPEN (≥$10k), all ELITE buckets allowed. Priority order:
+    GOLD > SILVER > BRONZE, active > inactive (stale_penalty).
+    """
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -154,35 +159,36 @@ def test_gold_active_polled_before_lower_wr_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=108.0,
+            path=csv, session=session, capital_total=15_000.0,  # ELITE_OPEN tier
         )
 
-        # Find positions of GOLD vs lower-wr buckets
+        # All ELITE buckets present
         gold_positions = [i for i, a in enumerate(cohort) if "gold" in a]
         mid_positions = [i for i, a in enumerate(cohort) if "mid" in a]
         low_positions = [i for i, a in enumerate(cohort) if "low" in a and "overflow" not in a]
         inactive_positions = [i for i, a in enumerate(cohort) if "inactive" in a]
 
         assert gold_positions, "no GOLD in cohort"
-        assert mid_positions, "no mid in cohort"
-        assert low_positions, "no low in cohort"
-        # GOLD positions must be all BEFORE any mid/low
+        assert mid_positions, "no SILVER (mid) in cohort"
+        assert low_positions, "no BRONZE (low) in cohort"
+        # GOLD active > SILVER active > BRONZE active (priority order)
         assert max(gold_positions) < min(mid_positions), (
             f"GOLD ranks {gold_positions} not all before mid {mid_positions}"
         )
         assert max(mid_positions) < min(low_positions), (
             f"mid {mid_positions} not all before low {low_positions}"
         )
-        # Inactive ELITE should be at the end (lowest priority due to stale_penalty)
+        # Inactive ELITE (stale_penalty) ranks lowest
         if inactive_positions:
             assert min(inactive_positions) > max(low_positions), (
                 f"inactive {inactive_positions} not at end after low {low_positions}"
             )
 
 
-def test_inactive_elite_in_cohort_but_low_priority_p6(tmp_path):
+def test_inactive_elite_stays_in_cohort_at_compatible_tier_p6(tmp_path):
     """Inactive ELITE (recent_activity_score < 25) STAYS in cohort but ranks low.
-    Operator rule: don't filter out, just deprioritize."""
+    Tested at ELITE_OPEN where inactive's WR bucket (BRONZE 0.945) is allowed.
+    """
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -190,18 +196,35 @@ def test_inactive_elite_in_cohort_but_low_priority_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=108.0,
+            path=csv, session=session, capital_total=15_000.0,  # ELITE_OPEN
         )
 
         inactive_in_cohort = [a for a in cohort if "inactive" in a]
         assert len(inactive_in_cohort) == 2, (
-            "inactive ELITE should be in cohort (slow lane), not removed"
+            "inactive ELITE in compatible bucket should stay in cohort (slow lane)"
         )
 
 
-def test_strong_never_in_small_capital_polling_p6(tmp_path):
-    """STRONG with overflow-eligible criteria (≥70 W+L, ≥0.90 wr) must NOT
-    be in SMALL cohort. They're reclass/promotion candidates only at <$500."""
+def test_strong_never_at_nano_tiny_micro_small_p6(tmp_path):
+    """STRONG never polled at NANO/TINY/MICRO/SMALL (<$1k). Overflow only ≥MEDIUM."""
+    eng = _engine()
+    with Session(eng) as session:
+        seeded = _seed_mfwr(session)
+        addresses = [r.address for r in seeded]
+        csv = _csv_path(tmp_path, addresses)
+
+        for cap_usd, tier_name in [(108.0, "NANO"), (220.0, "TINY"), (400.0, "MICRO"), (700.0, "SMALL")]:
+            cohort = WalletPollingEngine.load_cohort(
+                path=csv, session=session, capital_total=cap_usd,
+            )
+            strong_in_cohort = [a for a in cohort if "strong" in a]
+            assert strong_in_cohort == [], (
+                f"{tier_name} (${cap_usd}) cohort must exclude STRONG, got {strong_in_cohort}"
+            )
+
+
+def test_medium_capital_includes_strong_gold_only_p6(tmp_path):
+    """At MEDIUM (≥$1k): STRONG GOLD overflow allowed. STRONG SILVER/BRONZE never."""
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -209,33 +232,20 @@ def test_strong_never_in_small_capital_polling_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=108.0,
+            path=csv, session=session, capital_total=1500.0,  # MEDIUM
         )
         strong_in_cohort = [a for a in cohort if "strong" in a]
-        assert strong_in_cohort == [], (
-            f"STRONG must not be in SMALL cohort, got {strong_in_cohort}"
-        )
-
-
-def test_medium_capital_includes_strong_p6(tmp_path):
-    """At MEDIUM (≥$500): cohort INCLUDES STRONG (per locked spec)."""
-    eng = _engine()
-    with Session(eng) as session:
-        seeded = _seed_mfwr(session)
-        addresses = [r.address for r in seeded]
-        csv = _csv_path(tmp_path, addresses)
-
-        cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=1080.0,  # $1080 = MEDIUM
-        )
-        strong_in_cohort = [a for a in cohort if "strong" in a]
+        # Fixture seeded 2 STRONG GOLD (wr=0.995) → both should be present.
         assert len(strong_in_cohort) == 2, (
-            f"MEDIUM cohort should include STRONG, got {strong_in_cohort}"
+            f"MEDIUM cohort should include STRONG GOLD overflow (2), got {strong_in_cohort}"
         )
 
 
 def test_huge_capital_excludes_strong_p6(tmp_path):
-    """At HUGE (≥$50k): ELITE only (institutional). STRONG excluded."""
+    """At HUGE (≥$64k): ELITE only (preservation). STRONG excluded.
+    Note: 12-tier refactor: STRONG GOLD overflow allowed up to GIGA ($63.99k);
+    HUGE/INST = preservation, no STRONG.
+    """
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -243,11 +253,11 @@ def test_huge_capital_excludes_strong_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=60_000.0,  # HUGE
+            path=csv, session=session, capital_total=80_000.0,  # HUGE
         )
         strong_in_cohort = [a for a in cohort if "strong" in a]
         assert strong_in_cohort == [], (
-            f"HUGE cohort should exclude STRONG (institutional), got {strong_in_cohort}"
+            f"HUGE cohort should exclude STRONG (preservation), got {strong_in_cohort}"
         )
 
 

@@ -66,8 +66,11 @@ class SignalEngine:
     # ---------------- legacy/mock entry points ----------------
 
     def generate_signals(self) -> list[Signal]:
+        # 2026-05-07 leak fix: LIMIT 1000 most recent. Was loading all 138k
+        # Signal rows on every /signals* hit → multi-MB/s leak under polling.
         try:
-            persisted = list(self.session.exec(select(Signal).order_by(Signal.created_at.desc())).all())
+            stmt = select(Signal).order_by(Signal.created_at.desc()).limit(1000)
+            persisted = list(self.session.exec(stmt).all())
         except Exception:
             persisted = []
         if persisted:

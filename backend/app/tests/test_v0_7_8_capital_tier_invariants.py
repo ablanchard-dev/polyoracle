@@ -207,23 +207,43 @@ def test_invariant_3_wallet_cap_monotonically_decreasing_or_flat():
 
 
 @pytest.mark.parametrize("capital_eur,expected_tier_name", [
-    # v0.7.8 P6 final — graduated 4-tier hybrid:
-    # SMALL  (<$500)  : growth, ELITE+STRONG, 2R/1R
-    # MEDIUM (<$5k)   : balanced, ELITE+STRONG, 1.5R/0.75R
-    # LARGE  (<$50k)  : preservation, ELITE only, 1R/0.5R
-    # HUGE   (≥$50k)  : institutional, ELITE only, 0.5R fixed
-    (50, "SMALL"),
-    (100, "SMALL"),
-    (250, "SMALL"),
-    (450, "SMALL"),     # 450€ × 1.08 = $486 < $500
-    (500, "MEDIUM"),    # 500€ × 1.08 = $540 ≥ $500
-    (1000, "MEDIUM"),
-    (4500, "MEDIUM"),
-    (5000, "LARGE"),    # 5000€ × 1.08 = $5400 ≥ $5000
-    (10000, "LARGE"),
-    (45000, "LARGE"),
-    (50000, "HUGE"),    # 50k€ × 1.08 = $54000 ≥ $50000
-    (200000, "HUGE"),
+    # v0.7.8 P6 — 12-tier refactor 2026-05-06 (operator spec):
+    # NANO  (<$200) ELITE GOLD only         max_pos 12
+    # TINY  (<$250)                         max_pos 18
+    # MICRO (<$500)                         max_pos 22
+    # SMALL (<$1k)  ELITE GOLD+SILVER       max_pos 32
+    # MEDIUM(<$2k)  + STRONG GOLD overflow  max_pos 50
+    # LARGE (<$4k)                          max_pos 75
+    # XL    (<$8k)                          max_pos 110
+    # XXL   (<$10k)                         max_pos 150
+    # ELITE_OPEN (<$32k) +ELITE BRONZE      max_pos 200
+    # GIGA  (<$64k)                         max_pos 300
+    # HUGE  (<$128k) preservation ELITE only max_pos 400
+    # INST  (≥$128k)                        max_pos 500
+    (50, "NANO"),       # $54 < $200
+    (100, "NANO"),      # $108 < $200
+    (180, "NANO"),      # $194 < $200
+    (190, "TINY"),      # $205 ≥ $200
+    (220, "TINY"),      # $237 < $250
+    (235, "MICRO"),     # $254 ≥ $250
+    (450, "MICRO"),     # $486 < $500
+    (470, "SMALL"),     # $507 ≥ $500
+    (920, "SMALL"),     # $993 < $1000
+    (940, "MEDIUM"),    # $1015 ≥ $1000
+    (1850, "MEDIUM"),   # $1998 < $2000
+    (1870, "LARGE"),    # $2019 ≥ $2000
+    (3700, "LARGE"),    # $3996 < $4000
+    (3720, "XL"),       # $4017 ≥ $4000
+    (7400, "XL"),       # $7992 < $8000
+    (7420, "XXL"),      # $8013 ≥ $8000
+    (9250, "XXL"),      # $9990 < $10000
+    (9270, "ELITE_OPEN"),  # $10011 ≥ $10000
+    (29000, "ELITE_OPEN"), # $31320 < $32000
+    (29700, "GIGA"),    # $32076 ≥ $32000
+    (59000, "GIGA"),    # $63720 < $64000
+    (59300, "HUGE"),    # $64044 ≥ $64000
+    (118000, "HUGE"),   # $127440 < $128000
+    (118600, "INST"),   # $128088 ≥ $128000
 ])
 def test_invariant_4_correct_tier_assignment(capital_eur, expected_tier_name):
     """Capital tier rules must dispatch to the correct tier."""
@@ -268,19 +288,26 @@ def test_invariant_5_clean_elite_signal_accepts_at_every_tier(capital_eur):
 
 
 @pytest.mark.parametrize("capital_eur,strong_should_pass", [
-    # v0.7.8 P6 final (operator rule 2026-05-05):
-    # SMALL  (<$500)  : ELITE only — capital protection at minimum
-    # MEDIUM ($500-5k): ELITE+STRONG — STRONG integrated as durations expand
-    # LARGE  ($5k-50k): ELITE+STRONG — even more diversification
-    # HUGE   (≥$50k)  : ELITE only — institutional preservation
-    (50, False),    # SMALL — STRONG REJECTED
-    (100, False),   # SMALL — operator rule "aucun STRONG à ce niveau"
-    (250, False),   # SMALL
-    (500, True),    # MEDIUM — STRONG starts here
-    (1000, True),   # MEDIUM
-    (5000, True),   # LARGE — STRONG continues
-    (10000, True),  # LARGE
-    (50000, False), # HUGE — STRONG filtered out (institutional)
+    # v0.7.8 P6 — 12-tier refactor 2026-05-06 (operator spec):
+    # NANO/TINY/MICRO (<$500)   : ELITE GOLD only — no STRONG
+    # SMALL (<$1k)              : ELITE GOLD+SILVER — still no STRONG
+    # MEDIUM-XXL ($1k-9.99k)    : + STRONG GOLD overflow
+    # ELITE_OPEN (≥$10k) / GIGA : + STRONG GOLD overflow
+    # HUGE (≥$64k) / INST       : ELITE only (preservation)
+    (50, False),     # NANO
+    (100, False),    # NANO
+    (180, False),    # NANO
+    (220, False),    # TINY
+    (450, False),    # MICRO
+    (700, False),    # SMALL — still no STRONG
+    (1000, True),    # MEDIUM — STRONG GOLD overflow allowed
+    (3000, True),    # LARGE
+    (7000, True),    # XL
+    (9000, True),    # XXL
+    (15000, True),   # ELITE_OPEN
+    (40000, True),   # GIGA
+    (70000, False),  # HUGE — preservation, no STRONG
+    (130000, False), # INST
 ])
 def test_invariant_6_strong_filtered_at_small_capital(capital_eur, strong_should_pass):
     a = CapitalAllocator()

@@ -205,10 +205,11 @@ def test_polling_close_helper_passes_bound_and_timeout(
     isolated_engine, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Contract: _run_adaptive_close_loop_sync MUST call
-    run_adaptive_close_iteration with max_entries=3 and gamma_timeout=3.0.
-    Drift here re-opens the silent-stall regression — worst case goes from
-    18s to 240s per polling iteration. This test fails before silently
-    re-introducing the bug."""
+    run_adaptive_close_iteration with max_entries=2 and gamma_timeout=2.0.
+
+    Calibrated 2026-05-06 for polling 10s ELITE: worst case must stay under
+    polling interval to avoid B19 watchdog stall. 2 × 2 HTTP × 2s = 8s < 10s.
+    Drift here re-opens the silent-stall regression."""
     captured: dict = {}
 
     def _fake_run_adaptive_close_iteration(
@@ -225,11 +226,11 @@ def test_polling_close_helper_passes_bound_and_timeout(
     eng = WalletPollingEngine()
     eng._run_adaptive_close_loop_sync()
 
-    assert captured.get("max_entries") == 3, (
+    assert captured.get("max_entries") == 2, (
         f"polling close-loop bound drifted: max_entries={captured.get('max_entries')}, "
-        f"expected 3. Re-opens silent-stall regression."
+        f"expected 2. Re-opens B19 silent-stall under polling 10s ELITE."
     )
-    assert captured.get("gamma_timeout") == 3.0, (
+    assert captured.get("gamma_timeout") == 2.0, (
         f"polling close-loop Gamma timeout drifted: gamma_timeout={captured.get('gamma_timeout')}, "
-        f"expected 3.0. Re-opens silent-stall regression."
+        f"expected 2.0. Re-opens B19 silent-stall under polling 10s ELITE."
     )

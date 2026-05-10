@@ -3,7 +3,7 @@
 import { Pause, Play, RefreshCw, Square, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ControlButton } from "@/components/ControlButton";
-import { RiskModePanel } from "@/components/RiskModePanel";
+import { CapitalTierPanel } from "@/components/CapitalTierPanel";
 import {
   BotLoopStatus,
   BotStatus,
@@ -88,6 +88,9 @@ export default function ControlRoomPage() {
       : null;
 
   async function handleReclass(dryRun: boolean) {
+    if (!dryRun) {
+      if (!confirm("Reclass NON-dry-run : modifie les candidate_status en DB de façon permanente (621 ELITE / 821 STRONG actuels).\n\nConfirmer ?")) return;
+    }
     setReclassBusy(true);
     setReclassError(null);
     try {
@@ -124,7 +127,10 @@ export default function ControlRoomPage() {
         <div className="flex flex-wrap gap-3">
           <ControlButton label="START" icon={Play} disabled={busy} onClick={() => call(() => postBotAction("start"), "bot started")} />
           <ControlButton label="PAUSE" icon={Pause} disabled={busy} onClick={() => call(() => postBotAction("pause"), "bot paused")} />
-          <ControlButton label="STOP" icon={Square} disabled={busy} onClick={() => call(() => postBotAction("stop"), "bot stopped")} />
+          <ControlButton label="STOP" icon={Square} disabled={busy} onClick={() => {
+            if (!confirm("STOP : interrompt le polling. Positions ouvertes non fermées.\n\nConfirmer ?")) return;
+            call(() => postBotAction("stop"), "bot stopped");
+          }} />
           <ControlButton label="KILL SWITCH" icon={Zap} tone="danger" disabled={busy} onClick={() => {
             if (!confirm("KILL SWITCH: This will flatten ALL open paper positions immediately. Continue?")) return;
             call(() => postBotAction("kill-switch"), "kill switch activated");
@@ -151,12 +157,12 @@ export default function ControlRoomPage() {
       </section>
 
       <section className="mt-6">
-        <RiskModePanel />
+        <CapitalTierPanel />
       </section>
 
       <section className="mt-6 rounded border border-line bg-panel p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Wallet polling (v0.5.8)</h2>
+          <h2 className="text-lg font-semibold">Wallet polling</h2>
           <span className={`rounded px-2 py-1 text-xs font-mono ${polling?.running ? "bg-accent/15 text-accent" : "bg-slate-800 text-slate-400"}`}>
             {polling?.running ? "RUNNING" : "STOPPED"}
           </span>

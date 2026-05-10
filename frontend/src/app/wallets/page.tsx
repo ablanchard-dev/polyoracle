@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UniversePanel } from "@/components/UniversePanel";
+import { CapitalTierPanel } from "@/components/CapitalTierPanel";
+import { CohortPanel } from "@/components/CohortPanel";
 import {
   CandidateRow,
   DiscoveryAuditReport,
@@ -221,7 +222,11 @@ export default function WalletsPage() {
       {error ? <div className="mb-4 rounded border border-danger bg-danger/10 p-3 text-sm text-red-100">{error}</div> : null}
 
       <section className="mb-6">
-        <UniversePanel />
+        <CapitalTierPanel />
+      </section>
+
+      <section className="mb-6">
+        <CohortPanel />
       </section>
 
       <section className="mb-6 rounded border border-accent bg-panel p-4">

@@ -246,86 +246,119 @@ class AllocatorDecision:
         return not self.accepted
 
 
-# ---------------- Capital-aware graduated rules (v0.7.8 P6 final) ----------------
+# ---------------- Capital-aware graduated rules (v0.7.8 P6 — 12-tier refactor 2026-05-06) ----------------
 #
-# Operator-aligned hybrid spec (per session 2026-05-04):
+# Operator-aligned spec (sessions 2026-05-04 + 2026-05-06):
 #
 #   - Quality bar = STRICT toujours (vrais seuils ELITE/STRONG; cohorte sain).
-#   - Tier capital adapts: wallet filter, max_open_positions, R-multipliers,
-#     and (via duration_filter) duration allocation.
+#   - 12 tiers granulaires (NANO → INST) au lieu de 4 (SMALL/MEDIUM/LARGE/HUGE).
+#   - Wallet filter à 2 dimensions: candidate_status (ELITE/STRONG) ET WR bucket
+#     (GOLD ≥99%, SILVER 95-99%, BRONZE 90-95%).
+#   - Petit capital → ULTRA selective (ELITE GOLD only). Plus le capital monte,
+#     plus on élargit la cohort: SILVER puis BRONZE (≥$10k pivot operator).
+#   - STRONG GOLD overflow only à partir de MEDIUM ($1k+), GOLD only (jamais
+#     STRONG SILVER/BRONZE).
 #
-# Why graduated: at 100€ the priority is GROWTH (high cadence, accept STRONG
-# variance, 2R bets). At 50k€+ the priority is PRESERVATION (ELITE only,
-# fixed 1R, smaller per-trade risk). The bot must scale its risk posture
-# with the bankroll.
+# Pivots clés (operator verbatim 2026-05-06):
+#   "petit capital, élite gold uniquement, plus tard tu prends silver,
+#    on touchera les ELITE [bronze] quand on est à plus de 10000".
 #
-# Tier table:
-#
-#   <  500 USD → SMALL    growth      ELITE+STRONG, 2R/1R, max_open 12
-#   < 5000     → MEDIUM   balanced    ELITE+STRONG, 1.5R/0.75R, max_open 20
-#   < 50000    → LARGE    preservation ELITE only, 1R/0.5R, max_open 40
-#   ≥ 50000    → HUGE     institutional top-25% ELITE, 0.5R fixed, max_open 75
-#
-# r_winning_multiplier / r_losing_multiplier are NEW in P6 — they replace
-# the previous hard-coded {2.0, 1.0} pair so the state machine adapts to
-# the tier's risk posture. e.g. at LARGE the "winning" posture is 1R, not 2R.
+# R-multiplier UNIFORM across all tiers (operator spec 2026-05-05): 2R win, 1R loss.
 
-# R-multiplier UNIFORM across all tiers (operator spec 2026-05-05):
-# "on a un systeme qui fais tjr 2R si gagne et si perd 1R et reste un r
-#  jusqu'à trade gagnant, si gagnant 2R et on y reste tant qu'on gagne"
-# = always 2R when winning, 1R when losing (until a win), then back to 2R.
-# Same logic at every capital tier — only max_pos and wallet filter graduate.
 R_WINNING_MULTIPLIER: float = 2.0
 R_LOSING_MULTIPLIER: float = 1.0
 
+# WR bucket thresholds (matches wallet_polling_engine.py priority bonuses).
+WR_GOLD_MIN: float = 0.99
+WR_SILVER_MIN: float = 0.95
+WR_BRONZE_MIN: float = 0.90
+
+
+def classify_wr_bucket(win_rate: float | None) -> str:
+    """Classify a wallet WR into GOLD/SILVER/BRONZE/REGULAR/UNKNOWN bucket.
+
+    Used both by capital_allocator (cohort filter) and wallet_polling_engine
+    (priority bonus). Single source of truth.
+    """
+    if win_rate is None:
+        return "UNKNOWN"
+    wr = float(win_rate)
+    if wr >= WR_GOLD_MIN:
+        return "GOLD"
+    if wr >= WR_SILVER_MIN:
+        return "SILVER"
+    if wr >= WR_BRONZE_MIN:
+        return "BRONZE"
+    return "REGULAR"
+
+
+# Helper to derive `allowed_tiers_intersect` (back-compat) from per-tier
+# bucket sets. Returns the set of candidate_status values that have at
+# least one allowed bucket.
+def _derive_allowed_tiers(elite_buckets: frozenset, strong_buckets: frozenset) -> frozenset:
+    out = set()
+    if elite_buckets:
+        out.add("ELITE")
+    if strong_buckets:
+        out.add("STRONG")
+    return frozenset(out)
+
+
+def _tier(
+    name: str,
+    max_capital_exclusive: float,
+    elite_buckets: frozenset,
+    strong_buckets: frozenset,
+    max_open_positions_cap: int,
+    max_total_exposure_cap: float,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "max_capital_exclusive": max_capital_exclusive,
+        "allowed_elite_buckets": elite_buckets,
+        "allowed_strong_buckets": strong_buckets,
+        "allowed_tiers_intersect": _derive_allowed_tiers(elite_buckets, strong_buckets),
+        "min_ev_lb_floor": None,
+        "min_copyable_edge_floor": None,
+        "max_open_positions_cap": max_open_positions_cap,
+        "risk_per_trade_cap": None,
+        "max_total_exposure_cap": max_total_exposure_cap,
+    }
+
+
+_GOLD = frozenset({"GOLD"})
+_GOLD_SILVER = frozenset({"GOLD", "SILVER"})
+_ALL_BUCKETS = frozenset({"GOLD", "SILVER", "BRONZE"})
+_NONE = frozenset()
+
 
 CAPITAL_TIER_RULES: list[dict[str, Any]] = [
-    {
-        # SMALL — Operator rule (2026-05-05): aucun STRONG, seulement ELITE.
-        # Exposition limitée à 60% (capital protection).
-        "name": "SMALL",
-        "max_capital_exclusive": 500.0,
-        "allowed_tiers_intersect": frozenset({"ELITE"}),
-        "min_ev_lb_floor": None,
-        "min_copyable_edge_floor": None,
-        "max_open_positions_cap": 12,
-        "risk_per_trade_cap": None,
-        "max_total_exposure_cap": 0.60,
-    },
-    {
-        # MEDIUM — STRONG s'intègre. Exposition montée à 70%.
-        "name": "MEDIUM",
-        "max_capital_exclusive": 5000.0,
-        "allowed_tiers_intersect": frozenset({"ELITE", "STRONG"}),
-        "min_ev_lb_floor": None,
-        "min_copyable_edge_floor": None,
-        "max_open_positions_cap": 20,
-        "risk_per_trade_cap": None,
-        "max_total_exposure_cap": 0.70,
-    },
-    {
-        # LARGE — Diversification active. Exposition 80%.
-        "name": "LARGE",
-        "max_capital_exclusive": 50_000.0,
-        "allowed_tiers_intersect": frozenset({"ELITE", "STRONG"}),
-        "min_ev_lb_floor": None,
-        "min_copyable_edge_floor": None,
-        "max_open_positions_cap": 40,
-        "risk_per_trade_cap": None,
-        "max_total_exposure_cap": 0.80,
-    },
-    {
-        # HUGE — Institutional. Exposition 90% (operator: "en huge c'est
-        # vrm du 90 expo"). ELITE only car preservation domine.
-        "name": "HUGE",
-        "max_capital_exclusive": float("inf"),
-        "allowed_tiers_intersect": frozenset({"ELITE"}),
-        "min_ev_lb_floor": None,
-        "min_copyable_edge_floor": None,
-        "max_open_positions_cap": 75,
-        "risk_per_trade_cap": None,
-        "max_total_exposure_cap": 0.90,
-    },
+    # 2026-05-09 op decision: doubled max_pos and bumped exposure to push cadence
+    # under PnL ramp. NANO 75% / TINY 80% / MICRO+SMALL 80% / progressive 90→95% above.
+    # < $200      NANO        ELITE GOLD+SILVER           max_pos 24  expo 75%
+    _tier("NANO",   200.0,    _GOLD_SILVER, _NONE,   24,  0.75),
+    # $200-249    TINY                                    max_pos 30  expo 80%
+    _tier("TINY",   250.0,    _GOLD_SILVER, _NONE,   30,  0.80),
+    # $250-499    MICRO                                   max_pos 40  expo 80%
+    _tier("MICRO",  500.0,    _GOLD_SILVER, _NONE,   40,  0.80),
+    # $500-999    SMALL                                   max_pos 60  expo 80%
+    _tier("SMALL",  1000.0,   _GOLD_SILVER, _NONE,   60,  0.80),
+    # $1k-1.99k   MEDIUM      ELITE GOLD+SILVER, no STRONG max_pos 90  expo 90%
+    _tier("MEDIUM", 2000.0,   _GOLD_SILVER, _NONE,   90,  0.90),
+    # $2k-3.99k   LARGE                                   max_pos 130 expo 92%
+    _tier("LARGE",  4000.0,   _GOLD_SILVER, _NONE,   130, 0.92),
+    # $4k-7.99k   XL                                      max_pos 180 expo 93%
+    _tier("XL",     8000.0,   _GOLD_SILVER, _NONE,   180, 0.93),
+    # $8k-9.99k   XXL                                     max_pos 240 expo 94%
+    _tier("XXL",    10000.0,  _GOLD_SILVER, _NONE,   240, 0.94),
+    # ≥$10k pivot ELITE_OPEN  + ELITE BRONZE + STRONG GOLD overflow  max_pos 320 expo 95%
+    _tier("ELITE_OPEN", 32000.0, _ALL_BUCKETS, _GOLD, 320, 0.95),
+    # $32k-63.99k GIGA                                    max_pos 480 expo 95%
+    _tier("GIGA",   64000.0,  _ALL_BUCKETS, _GOLD,   480, 0.95),
+    # $64k-127.99k HUGE       all ELITE + STRONG GOLD     max_pos 640 expo 95%
+    _tier("HUGE",   128000.0, _ALL_BUCKETS, _GOLD,   640, 0.95),
+    # ≥$128k       INST       all ELITE + STRONG GOLD     max_pos 800 expo 95%
+    _tier("INST",   float("inf"), _ALL_BUCKETS, _GOLD, 800, 0.95),
 ]
 
 
@@ -334,6 +367,25 @@ def _resolve_tier(capital_total: float) -> dict[str, Any]:
         if capital_total < rule["max_capital_exclusive"]:
             return rule
     return CAPITAL_TIER_RULES[-1]
+
+
+def is_wallet_allowed_at_tier(
+    candidate_status: str | None,
+    win_rate: float | None,
+    capital_total: float,
+) -> bool:
+    """Return True if a wallet (status + WR) is allowed at the current capital tier.
+
+    Used by wallet_polling_engine.load_cohort to filter MFWR rows by both
+    candidate_status AND WR bucket per the 12-tier rules above.
+    """
+    rule = _resolve_tier(float(capital_total))
+    bucket = classify_wr_bucket(win_rate)
+    if candidate_status == "ELITE":
+        return bucket in rule["allowed_elite_buckets"]
+    if candidate_status == "STRONG":
+        return bucket in rule["allowed_strong_buckets"]
+    return False
 
 
 def get_r_multipliers_for_capital(capital_total: float) -> tuple[float, float]:

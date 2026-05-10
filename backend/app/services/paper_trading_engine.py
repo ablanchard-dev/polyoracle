@@ -114,24 +114,35 @@ def _holding_minutes(opened_at: datetime, closed_at: datetime) -> float:
 def _close_metadata_payload(
     *, holding_minutes: float, capital_released: float, exit_price: float,
     entry_fee: float = 0.0, exit_fee: float = 0.0, gross_pnl: float = 0.0,
+    raw_exit_price: float | None = None, exit_slippage: float = 0.0,
+    synthetic_orderbook_used: bool = False,
 ) -> str:
     """Pack close metrics into the close_reason column as a JSON suffix.
 
     Schema convention: ``"<REASON>|<json_metrics>"`` so simple substring
     queries on close_reason still work.
 
-    v0.7.8 — adds B12 fee accounting fields so the operator can see the
-    gross-vs-net split on every closed trade.
+    v0.7.8 — adds B12 fee accounting fields.
+    2026-05-07 — adds synthetic-orderbook tracing so we can answer
+    post-paper "did the synth penalize too much?". Stores raw vs effective
+    exit price + exit slippage applied. Combined with PaperTrade.slippage
+    (entry slip already stored) + average_price (effective entry), every
+    trade is fully reconstructible to its naive (pre-synth) PnL.
     """
     import json as _json
-    return _json.dumps({
+    payload = {
         "holding_minutes": holding_minutes,
         "capital_released_usdc": round(capital_released, 6),
         "exit_price": round(exit_price, 6),
         "entry_fee": round(entry_fee, 6),
         "exit_fee": round(exit_fee, 6),
         "gross_pnl": round(gross_pnl, 6),
-    })
+        "synthetic_orderbook_used": bool(synthetic_orderbook_used),
+        "exit_slippage": round(exit_slippage, 6),
+    }
+    if raw_exit_price is not None:
+        payload["raw_exit_price"] = round(raw_exit_price, 6)
+    return _json.dumps(payload)
 
 
 def _b12_fee_for(session: Session, market_id: str | None, price: float, quantity: float) -> float:
@@ -160,6 +171,80 @@ def _b12_fee_for(session: Session, market_id: str | None, price: float, quantity
     return float(_b12(category, price, quantity))
 
 
+# 2026-05-09 — Tier auto-adapt on PnL (operator spec: "si pnl le bot change comportement").
+# Reads baseline timestamp from _backups_v0_7_8_smoke_pre/T0_paper_72h.txt so we
+# count only the current paper-session PnL, not the historical paper soup. Allows
+# the tier to ramp NANO → TINY → MICRO etc. as the bot earns within the session.
+_PAPER_BASELINE_FILE = "_backups_v0_7_8_smoke_pre/T0_paper_72h.txt"
+
+
+def _read_paper_baseline_at() -> datetime | None:
+    try:
+        import os as _os
+        # File path is relative to backend/ (where dev_server.py runs).
+        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))
+        path = _os.path.join(base_dir, _PAPER_BASELINE_FILE)
+        if not _os.path.exists(path):
+            return None
+        with open(path) as fh:
+            ts = fh.read().strip()
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def compute_effective_paper_capital(session: Session, *, settings_fallback: float = 100.0) -> float:
+    """Effective tier-resolution capital = starting paper_capital + session-PnL.
+
+    The session-PnL is the cumulative realized_pnl of trades opened after the
+    paper baseline timestamp (`T0_paper_72h.txt`). This isolates the current
+    paper validation run from any historical paper trades polluting the DB.
+
+    On a fresh DB or missing baseline file, returns paper_capital alone.
+    """
+    from sqlalchemy import func as _func
+    state = session.get(BotState, 1)
+    if state is None or state.paper_capital is None:
+        return float(settings_fallback)
+    base = float(state.paper_capital)
+    baseline = _read_paper_baseline_at()
+    stmt = select(_func.sum(PaperTrade.realized_pnl))
+    if baseline is not None:
+        stmt = stmt.where(PaperTrade.opened_at >= baseline)
+    pnl = session.exec(stmt).one()
+    return base + float(pnl or 0.0)
+
+
+# 2026-05-07 — Synthetic orderbook (operator decision: PnL must not be inflated).
+# When _elite_paper_bypass is active the real orderbook is unavailable
+# (Polymarket CLOB returns 404 on crypto 5-min markets). Without synthesis,
+# entry/exit prices skip spread+slippage entirely → PnL paper >> PnL live.
+# Conservative U-shape: max ~4% near 0.5 (max uncertainty, widest spread),
+# floor ~1% near 0/1 (near-certain, tightest spread). Symmetric to live empirics.
+_SYNTH_SPREAD_BASE = 0.01
+_SYNTH_SPREAD_PEAK_EXTRA = 0.03
+_SYNTH_SLIPPAGE_CAP = 0.02
+
+
+def _synth_spread(price: float) -> float:
+    p = max(0.0, min(1.0, float(price)))
+    return _SYNTH_SPREAD_BASE + _SYNTH_SPREAD_PEAK_EXTRA * (1.0 - 2.0 * abs(p - 0.5))
+
+
+def _apply_synth_exit_slippage(exit_price: float, trade_side: str) -> tuple[float, float]:
+    """Returns (effective_exit_price, slippage_applied). Symmetric model:
+    BUY closer = SELL at mid - spread/2. SELL closer = BUY at mid + spread/2.
+    Polymarket prices are bounded to [0.0, 1.0], result clamped accordingly.
+    """
+    spread = _synth_spread(exit_price)
+    slip = min(_SYNTH_SLIPPAGE_CAP, spread / 2.0)
+    if (trade_side or "").upper() == "BUY":
+        eff = max(0.0, float(exit_price) - slip)
+    else:
+        eff = min(1.0, float(exit_price) + slip)
+    return eff, slip
+
+
 def _close_paper_with_reason(
     session: Session,
     trade: PaperTrade,
@@ -182,10 +267,20 @@ def _close_paper_with_reason(
     """
     if reason not in CLOSE_REASONS:
         raise ValueError(f"unknown close reason {reason!r}; allowed={CLOSE_REASONS}")
-    if trade.side and trade.side.upper() == "BUY":
-        gross_pnl = (exit_price - trade.average_price) * trade.quantity
+    # 2026-05-07: apply synthetic exit slippage on non-resolved closes.
+    # RESOLVED closes settle via Polymarket oracle (no spread), so price stays raw.
+    raw_exit_price = float(exit_price)
+    if reason == CLOSE_REASON_RESOLVED:
+        effective_exit = raw_exit_price
+        exit_slippage = 0.0
+        synth_used = False
     else:
-        gross_pnl = (trade.average_price - exit_price) * trade.quantity
+        effective_exit, exit_slippage = _apply_synth_exit_slippage(exit_price, trade.side or "BUY")
+        synth_used = True
+    if trade.side and trade.side.upper() == "BUY":
+        gross_pnl = (effective_exit - trade.average_price) * trade.quantity
+    else:
+        gross_pnl = (trade.average_price - effective_exit) * trade.quantity
 
     # v0.7.8 — B12 fee accounting
     entry_fee = _b12_fee_for(session, trade.market_id, trade.average_price, trade.quantity)
@@ -196,8 +291,8 @@ def _close_paper_with_reason(
         exit_fee = 0.0
     else:
         # Manual / stale-TTL / signal-invalidated = we placed an exit
-        # order at exit_price, paying the second leg fee.
-        exit_fee = _b12_fee_for(session, trade.market_id, exit_price, trade.quantity)
+        # order at effective_exit (post-slippage), paying the second leg fee.
+        exit_fee = _b12_fee_for(session, trade.market_id, effective_exit, trade.quantity)
     total_fee = entry_fee + exit_fee
     trade.fees = round(total_fee, 6)
     trade.realized_pnl = round(gross_pnl - total_fee, 6)
@@ -210,10 +305,13 @@ def _close_paper_with_reason(
     metadata = _close_metadata_payload(
         holding_minutes=holding,
         capital_released=capital_released,
-        exit_price=exit_price,
+        exit_price=effective_exit,
         entry_fee=entry_fee,
         exit_fee=exit_fee,
         gross_pnl=gross_pnl,
+        raw_exit_price=raw_exit_price,
+        exit_slippage=exit_slippage,
+        synthetic_orderbook_used=synth_used,
     )
     trade.close_reason = f"{reason}|{metadata}"
     session.add(trade)
@@ -420,12 +518,9 @@ class PaperTradingEngine:
         self.paper_capital = self._effective_paper_capital()
 
     def _effective_paper_capital(self) -> float:
-        """Read paper_capital from BotState (DB). Falls back to Settings
-        only if BotState is uninitialised (test/early-boot)."""
-        state = self.session.get(BotState, 1)
-        if state and state.paper_capital is not None:
-            return float(state.paper_capital)
-        return float(self.settings.paper_capital)
+        """Effective capital = paper_capital + session-PnL (cumulative realized
+        PnL since T0_paper_72h baseline). Drives tier ramping NANO→TINY→MICRO."""
+        return compute_effective_paper_capital(self.session, settings_fallback=self.settings.paper_capital)
 
     # ---------------- existing helpers ----------------
 
@@ -445,8 +540,15 @@ class PaperTradingEngine:
     ) -> PaperTrade:
         if auto and not allocator_checked:
             raise PermissionError("Auto paper trades must pass CapitalAllocator before opening")
-        slippage = min(0.02, spread / 2)
-        entry_price = price + slippage if side.upper() == "BUY" else max(0.0, price - slippage)
+        # 2026-05-07: when bypass active, incoming spread = 0 (no orderbook).
+        # Synthesize a conservative spread from yes_price so entry is realistic.
+        # Polymarket prices in [0,1] — clamp both sides.
+        effective_spread = spread if spread > 0.001 else _synth_spread(price)
+        slippage = min(_SYNTH_SLIPPAGE_CAP, effective_spread / 2.0)
+        if side.upper() == "BUY":
+            entry_price = min(1.0, price + slippage)
+        else:
+            entry_price = max(0.0, price - slippage)
         notional = notional_usd if notional_usd is not None else round(entry_price * quantity, 2)
         trade = PaperTrade(
             id=str(uuid4()),
@@ -467,10 +569,15 @@ class PaperTradingEngine:
         return trade
 
     def close_paper_position(self, trade: PaperTrade, exit_price: float, reason: str | None = None) -> PaperTrade:
-        if trade.side.upper() == "BUY":
-            gross_pnl = (exit_price - trade.average_price) * trade.quantity
+        # 2026-05-07: same synthetic exit slippage as _close_paper_with_reason.
+        if reason == CLOSE_REASON_RESOLVED:
+            effective_exit = float(exit_price)
         else:
-            gross_pnl = (trade.average_price - exit_price) * trade.quantity
+            effective_exit, _ = _apply_synth_exit_slippage(exit_price, trade.side or "BUY")
+        if trade.side.upper() == "BUY":
+            gross_pnl = (effective_exit - trade.average_price) * trade.quantity
+        else:
+            gross_pnl = (trade.average_price - effective_exit) * trade.quantity
         # v0.7.8 — B12 fee accounting on the legacy close path. Same
         # semantics as _close_paper_with_reason: entry fee always; exit
         # fee unless this is an explicit RESOLVED close (manual closes
@@ -479,7 +586,7 @@ class PaperTradingEngine:
         if reason == CLOSE_REASON_RESOLVED:
             exit_fee = 0.0
         else:
-            exit_fee = _b12_fee_for(self.session, trade.market_id, exit_price, trade.quantity)
+            exit_fee = _b12_fee_for(self.session, trade.market_id, effective_exit, trade.quantity)
         total_fee = entry_fee + exit_fee
         trade.fees = round(total_fee, 6)
         trade.realized_pnl = round(gross_pnl - total_fee, 2)
@@ -496,8 +603,10 @@ class PaperTradingEngine:
         return list(self.session.exec(select(PaperTrade).where(PaperTrade.status == "open")).all())
 
     def compute_paper_pnl(self) -> float:
-        trades = self.session.exec(select(PaperTrade)).all()
-        return round(sum(trade.realized_pnl for trade in trades), 2)
+        # 2026-05-07 — leak fix: SQL SUM instead of loading all rows.
+        from sqlalchemy import func
+        total = self.session.exec(select(func.sum(PaperTrade.realized_pnl))).one()
+        return round(float(total or 0.0), 2)
 
     def compute_unrealized_pnl(self) -> float:
         return 0.0
@@ -523,14 +632,24 @@ class PaperTradingEngine:
         return {"filtered_copy": 0.0, "naive_copy": 0.0}
 
     def generate_paper_report(self) -> dict[str, float | int]:
-        trades = self.session.exec(select(PaperTrade)).all()
-        closed = [trade for trade in trades if trade.status == "closed"]
-        wins = [trade for trade in closed if trade.realized_pnl > 0]
+        # 2026-05-07 — leak fix: SQL aggregates instead of loading all rows.
+        from sqlalchemy import func
+        open_count = self.session.exec(
+            select(func.count(PaperTrade.id)).where(PaperTrade.status == "open")
+        ).one() or 0
+        closed_count = self.session.exec(
+            select(func.count(PaperTrade.id)).where(PaperTrade.status == "closed")
+        ).one() or 0
+        wins_count = self.session.exec(
+            select(func.count(PaperTrade.id))
+            .where(PaperTrade.status == "closed")
+            .where(PaperTrade.realized_pnl > 0)
+        ).one() or 0
         return {
-            "open_positions": len([trade for trade in trades if trade.status == "open"]),
-            "closed_trades": len(closed),
+            "open_positions": int(open_count),
+            "closed_trades": int(closed_count),
             "realized_pnl": self.compute_realized_pnl(),
-            "win_rate": round(len(wins) / len(closed), 3) if closed else 0.0,
+            "win_rate": round(int(wins_count) / int(closed_count), 3) if closed_count else 0.0,
         }
 
     def reset(self) -> None:
@@ -596,12 +715,13 @@ class PaperTradingEngine:
         )
 
     def daily_pnl(self) -> float:
-        cutoff = datetime.now(UTC) - timedelta(days=1)
+        # SQLite stores datetimes offset-naive; align cutoff to avoid TypeError.
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
         trades = self.session.exec(select(PaperTrade).where(PaperTrade.status == "closed")).all()
         return round(sum(trade.realized_pnl for trade in trades if trade.closed_at and trade.closed_at >= cutoff), 2)
 
     def weekly_pnl(self) -> float:
-        cutoff = datetime.now(UTC) - timedelta(days=7)
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=7)
         trades = self.session.exec(select(PaperTrade).where(PaperTrade.status == "closed")).all()
         return round(sum(trade.realized_pnl for trade in trades if trade.closed_at and trade.closed_at >= cutoff), 2)
 

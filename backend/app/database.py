@@ -14,7 +14,18 @@ if settings.local_first:
 
 database_url = settings.resolved_database_url
 connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-engine = create_engine(database_url, echo=False, connect_args=connect_args)
+# v0.7.8 P6 — 2026-05-06: bump pool size from default (5+10) to 20+40
+# pool_pre_ping evicts stale conns. Required to handle polling cohort 112+
+# concurrent reads + UI refresh + market_metadata_resolver hooks.
+engine = create_engine(
+    database_url,
+    echo=False,
+    connect_args=connect_args,
+    pool_size=20,
+    max_overflow=40,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
 
 
 # v0.7.5 Option C — DATABASE_URL startup guard.

@@ -168,6 +168,108 @@ def market_first_top(limit: int = 50, session: Session = Depends(get_session)) -
     return MarketFirstDiscoveryService(session).list_top_wallets(limit=limit)
 
 
+# ---------------- v0.7.8 P6 — 12-tier cohort with WR buckets ----------------
+
+
+@router.get("/wallets/cohort")
+def get_cohort_p6(limit: int = 200, session: Session = Depends(get_session)) -> dict:
+    """Active cohort filtered + ranked per current capital tier.
+
+    Returns:
+      - current_tier (NANO/TINY/.../INST)
+      - current_capital (BotState.paper_capital)
+      - allowed_elite_buckets / allowed_strong_buckets (per tier rule)
+      - counts: total_elite, total_strong, by_bucket {GOLD/SILVER/BRONZE}
+      - tradable_now: count of wallets currently allowed to trade
+      - wallets[]: top N rows sorted by priority, with bucket + tradable flag
+    """
+    from sqlmodel import select
+    from app.models.bot import BotState
+    from app.models.wallet import MarketFirstWalletRecord
+    from app.services.capital_allocator import (
+        _resolve_tier,
+        classify_wr_bucket,
+        is_wallet_allowed_at_tier,
+    )
+
+    # 2026-05-09: use effective capital (= paper_capital + session-PnL) so the
+    # /wallets/cohort endpoint reflects the auto-ramping tier in real time.
+    from app.services.paper_trading_engine import compute_effective_paper_capital
+    capital = compute_effective_paper_capital(session)
+    rule = _resolve_tier(capital)
+
+    rows = session.exec(
+        select(MarketFirstWalletRecord).where(
+            MarketFirstWalletRecord.candidate_status.in_(["ELITE", "STRONG"])
+        )
+    ).all()
+
+    counts = {
+        "total_elite": 0,
+        "total_strong": 0,
+        "elite_by_bucket": {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "REGULAR": 0},
+        "strong_by_bucket": {"GOLD": 0, "SILVER": 0, "BRONZE": 0, "REGULAR": 0},
+    }
+    enriched = []
+    tradable_now = 0
+    for r in rows:
+        bucket = classify_wr_bucket(r.resolved_market_win_rate)
+        tradable = is_wallet_allowed_at_tier(
+            r.candidate_status, r.resolved_market_win_rate, capital
+        )
+        if r.candidate_status == "ELITE":
+            counts["total_elite"] += 1
+            if bucket in counts["elite_by_bucket"]:
+                counts["elite_by_bucket"][bucket] += 1
+        elif r.candidate_status == "STRONG":
+            counts["total_strong"] += 1
+            if bucket in counts["strong_by_bucket"]:
+                counts["strong_by_bucket"][bucket] += 1
+        if tradable:
+            tradable_now += 1
+        enriched.append({
+            "address": r.address,
+            "candidate_status": r.candidate_status,
+            "win_rate": r.resolved_market_win_rate,
+            "wr_bucket": bucket,
+            "resolved_winning": r.resolved_winning_markets,
+            "resolved_losing": r.resolved_losing_markets,
+            "sample_wl": (r.resolved_winning_markets or 0) + (r.resolved_losing_markets or 0),
+            "recent_activity_score": r.recent_activity_score,
+            "composite_score": r.composite_score,
+            "best_category": r.best_category,
+            "tradable_now": tradable,
+        })
+
+    # Sort: tradable_now first, then by priority (ELITE GOLD active first)
+    def _priority(w: dict) -> tuple:
+        elite_bonus = 1000 if w["candidate_status"] == "ELITE" else 0
+        wr = w["win_rate"] or 0.0
+        bucket_bonus = 500 if wr >= 0.99 else 300 if wr >= 0.95 else 100 if wr >= 0.90 else 0
+        act = w["recent_activity_score"] or 0
+        stale = -100 if act < 25 else 0
+        return (
+            int(w["tradable_now"]),
+            elite_bonus + bucket_bonus + act + stale,
+            wr,
+            w["sample_wl"],
+        )
+
+    enriched.sort(key=_priority, reverse=True)
+
+    return {
+        "current_tier": rule["name"],
+        "current_capital": capital,
+        "allowed_elite_buckets": sorted(rule["allowed_elite_buckets"]),
+        "allowed_strong_buckets": sorted(rule["allowed_strong_buckets"]),
+        "max_open_positions": rule["max_open_positions_cap"],
+        "max_total_exposure": rule["max_total_exposure_cap"],
+        "counts": counts,
+        "tradable_now": tradable_now,
+        "wallets": enriched[:limit],
+    }
+
+
 @router.get("/wallets/market-first/{address}")
 def market_first_wallet(address: str, session: Session = Depends(get_session)) -> dict:
     record = MarketFirstDiscoveryService(session).get_wallet(address)
