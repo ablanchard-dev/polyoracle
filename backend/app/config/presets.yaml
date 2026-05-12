@@ -60,7 +60,15 @@ BASE_LIVE:
     Hard safety caps complement the soft preset rules (drawdown auto-kill,
     weekly-loss kill switch). When capital_total ≤ 50, sliding scale auto-
     tightens to ELITE-only, EV_lb ≥ 0.10, max 5 positions.
-  max_total_exposure: 0.70
+
+    P0.5 (Round 8, 2026-05-12): max_total_exposure raised 0.70 → 0.95 to
+    let the CAPITAL_TIER_RULES ladder (75% NANO → 95% MEDIUM+) actually
+    take effect in live. Pre-fix, `min(0.70, tier_cap)` capped live at
+    70% regardless of tier, contradicting the operator's spec ("exposure
+    monte avec le PnL") and breaking the paper-≤-live invariant
+    (BASE_PAPER=0.95 was effectively > BASE_LIVE=0.70). Tier_cap is now
+    the real ceiling.
+  max_total_exposure: 0.95
   max_open_positions: 100
   reserve_buffer: 0.20
   risk_per_trade: 0.01

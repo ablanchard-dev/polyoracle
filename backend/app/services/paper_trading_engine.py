@@ -181,6 +181,11 @@ def _b12_fee_for(session: Session, market_id: str | None, price: float, quantity
 # Reads baseline timestamp from _backups_v0_7_8_smoke_pre/T0_paper_72h.txt so we
 # count only the current paper-session PnL, not the historical paper soup. Allows
 # the tier to ramp NANO → TINY → MICRO etc. as the bot earns within the session.
+#
+# P0.2 (Round 8, 2026-05-12): when PAPER_LIVE_STRICT is on, we IGNORE the file
+# baseline and use EFFECTIVE_BASELINE_T0 instead. The file T0 may pre-date the
+# strict cutover, which would inflate the tier resolution by including pre-fix
+# PnL. In strict mode the only legitimate baseline is the constant.
 _PAPER_BASELINE_FILE = "_backups_v0_7_8_smoke_pre/T0_paper_72h.txt"
 
 
@@ -199,21 +204,75 @@ def _read_paper_baseline_at() -> datetime | None:
         return None
 
 
+def _resolve_baseline_for_capital_calc(strict_mode: bool) -> tuple[datetime | None, str]:
+    """Resolve which baseline timestamp the capital calc should use.
+
+    Returns (baseline_dt, source_tag) where source_tag is one of:
+      - "effective_baseline_t0" (strict mode, always wins)
+      - "file_t0" (legacy file, non-strict)
+      - "none" (no baseline available — use full DB)
+
+    In strict mode, the constant EFFECTIVE_BASELINE_T0 is the only valid
+    baseline because the file may be older than the strict cutover and would
+    leak pre-fix PnL into the tier resolution.
+    """
+    from app.services.baseline_constants import EFFECTIVE_BASELINE_T0
+
+    if strict_mode:
+        return (EFFECTIVE_BASELINE_T0, "effective_baseline_t0")
+
+    file_baseline = _read_paper_baseline_at()
+    if file_baseline is None:
+        return (None, "none")
+    # Emit a soft warning if the file baseline pre-dates the strict cutover
+    # — this would silently include obsolete PnL in non-strict mode too.
+    if file_baseline < EFFECTIVE_BASELINE_T0:
+        import logging
+        logging.getLogger(__name__).warning(
+            "compute_effective_paper_capital: file T0 (%s) pre-dates "
+            "EFFECTIVE_BASELINE_T0 (%s) — non-strict mode will count pre-fix "
+            "PnL. Consider enabling PAPER_LIVE_STRICT.",
+            file_baseline.isoformat(),
+            EFFECTIVE_BASELINE_T0.isoformat(),
+        )
+    return (file_baseline, "file_t0")
+
+
 def compute_effective_paper_capital(session: Session, *, settings_fallback: float = 100.0) -> float:
     """Effective tier-resolution capital = starting paper_capital + session-PnL.
 
     The session-PnL is the cumulative realized_pnl of trades opened after the
-    paper baseline timestamp (`T0_paper_72h.txt`). This isolates the current
-    paper validation run from any historical paper trades polluting the DB.
+    paper baseline timestamp. Baseline source depends on `paper_live_strict`:
 
-    On a fresh DB or missing baseline file, returns paper_capital alone.
+      - strict mode  → EFFECTIVE_BASELINE_T0 (2026-05-11T13:21:33Z post category fix)
+      - non-strict   → file `T0_paper_72h.txt` (legacy)
+      - neither      → full DB (no filter)
+
+    On a fresh DB or missing baseline file in non-strict mode, returns
+    paper_capital alone.
+
+    P0.2 (Round 8 2026-05-12): the strict-mode branch was added to prevent
+    the file T0 (possibly pre-dating the strict cutover) from leaking
+    pre-fix PnL into the tier resolution. Verbatim review Round 8:
+    "compute_effective_paper_capital doit utiliser EFFECTIVE_BASELINE_T0
+    quand PAPER_LIVE_STRICT=true. Ne plus utiliser T0_paper_72h si strict
+    baseline existe."
     """
+    from app.config import get_settings
     from sqlalchemy import func as _func
+
     state = session.get(BotState, 1)
     if state is None or state.paper_capital is None:
         return float(settings_fallback)
     base = float(state.paper_capital)
-    baseline = _read_paper_baseline_at()
+
+    # P0.2: pick baseline based on strict flag
+    try:
+        strict_mode = bool(getattr(get_settings(), "paper_live_strict", False))
+    except Exception:
+        strict_mode = False
+    baseline, _src = _resolve_baseline_for_capital_calc(strict_mode)
+
     stmt = select(_func.sum(PaperTrade.realized_pnl))
     if baseline is not None:
         stmt = stmt.where(PaperTrade.opened_at >= baseline)
@@ -543,7 +602,22 @@ class PaperTradingEngine:
         auto: bool = False,
         notional_usd: float | None = None,
         allocator_checked: bool = False,
+        entry_audit: dict | None = None,
     ) -> PaperTrade:
+        """Open a paper position and (P0.4) persist its entry-price provenance.
+
+        Args:
+            entry_audit: optional dict with the provenance fields captured at
+                open time (passed by `_run_open_with_audit()`). Keys:
+                - raw_signal_price: source wallet's trade price
+                - gamma_mid_at_open: live Gamma price re-fetched
+                - clob_best_bid_at_open / clob_best_ask_at_open
+                - spread_at_open / liquidity_score_at_open
+                - entry_price_source: GAMMA / CLOB / SYNTH / WALLET_FROZEN_FALLBACK
+                - price_source_confidence: HIGH / MEDIUM / LOW
+                - source_trade_id, source_wallet
+                If None, no EntryPriceAudit row is created (legacy callers).
+        """
         if auto and not allocator_checked:
             raise PermissionError("Auto paper trades must pass CapitalAllocator before opening")
         # 2026-05-07: when bypass active, incoming spread = 0 (no orderbook).
@@ -572,7 +646,84 @@ class PaperTradingEngine:
         self.session.add(trade)
         self.session.commit()
         self.session.refresh(trade)
+
+        # P0.4: persist entry price provenance for paper-vs-live audit + M1 v5
+        if entry_audit is not None:
+            self._record_entry_price_audit(trade, entry_price, effective_spread, entry_audit)
+
         return trade
+
+    def _record_entry_price_audit(
+        self,
+        trade: PaperTrade,
+        chosen_entry_price: float,
+        effective_spread: float,
+        audit_data: dict,
+    ) -> None:
+        """P0.4 — create an EntryPriceAudit row for paper-vs-live calibration.
+
+        Failure to write the audit must NEVER block the trade open (the trade
+        is already committed). On error we log and continue.
+        """
+        try:
+            from app.models.trade import EntryPriceAudit
+
+            gamma_mid = audit_data.get("gamma_mid_at_open")
+            clob_bid = audit_data.get("clob_best_bid_at_open")
+            clob_ask = audit_data.get("clob_best_ask_at_open")
+
+            # Live shadow entry price: best_ask for BUY, best_bid for SELL.
+            # Fallback: gamma_mid ± synth_spread/2 (matches what live would pay
+            # approximately when CLOB is unavailable).
+            side_up = (trade.side or "BUY").upper()
+            shadow = None
+            if side_up == "BUY":
+                if clob_ask is not None:
+                    shadow = clob_ask
+                elif gamma_mid is not None:
+                    shadow = min(1.0, gamma_mid + effective_spread / 2.0)
+            else:  # SELL
+                if clob_bid is not None:
+                    shadow = clob_bid
+                elif gamma_mid is not None:
+                    shadow = max(0.0, gamma_mid - effective_spread / 2.0)
+
+            slip_abs = (
+                abs(shadow - chosen_entry_price) if shadow is not None and chosen_entry_price else None
+            )
+            slip_pct = (
+                slip_abs / chosen_entry_price if slip_abs is not None and chosen_entry_price else None
+            )
+
+            row = EntryPriceAudit(
+                id=str(uuid4()),
+                paper_trade_id=trade.id,
+                market_id=trade.market_id,
+                outcome=trade.outcome,
+                side=side_up,
+                source_trade_id=audit_data.get("source_trade_id"),
+                source_wallet=audit_data.get("source_wallet") or trade.wallet_address,
+                raw_signal_price=audit_data.get("raw_signal_price"),
+                gamma_mid_at_open=gamma_mid,
+                clob_best_bid_at_open=clob_bid,
+                clob_best_ask_at_open=clob_ask,
+                spread_at_open=audit_data.get("spread_at_open", effective_spread),
+                liquidity_score_at_open=audit_data.get("liquidity_score_at_open"),
+                chosen_entry_price=chosen_entry_price,
+                entry_price_source=audit_data.get("entry_price_source", "UNKNOWN"),
+                price_source_confidence=audit_data.get("price_source_confidence", "LOW"),
+                live_shadow_entry_price=shadow,
+                live_shadow_slippage_abs=slip_abs,
+                live_shadow_slippage_pct=slip_pct,
+                opened_at=trade.opened_at,
+            )
+            self.session.add(row)
+            self.session.commit()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to persist EntryPriceAudit for trade %s: %s", trade.id, exc,
+            )
 
     def close_paper_position(self, trade: PaperTrade, exit_price: float, reason: str | None = None) -> PaperTrade:
         # 2026-05-07: same synthetic exit slippage as _close_paper_with_reason.
@@ -975,6 +1126,48 @@ class PaperTradingEngine:
 
     def _capital_available_usd(self) -> float:
         return max(0.0, round(self.paper_capital - self.open_notional_usd(), 4))
+
+    def _log_visibility_leakage(
+        self, *, signal: Signal, audit_context: dict, source_trade_id: str,
+        source_seen_at: datetime, now_utc: datetime, delta_s: float,
+    ) -> None:
+        """P0.3 M1 v5 — log a NoTradeDecision when the visibility gate refuses
+        a causally-impossible trade (source.seen_at > now + 2s tolerance)."""
+        try:
+            from app.services.risk_engine import RiskEngine
+            details = {
+                "gate": "M1_V5_VISIBILITY",
+                "source_trade_id": source_trade_id,
+                "source_seen_at": source_seen_at.isoformat(),
+                "bot_now": now_utc.isoformat(),
+                "delta_seconds_after_now": round(delta_s, 3),
+                "explanation": (
+                    "Source PublicTrade.seen_at is later than bot's open moment. "
+                    "Live cannot reproduce this — likely backfill, wrong join, or "
+                    "clock skew. Trade refused."
+                ),
+                "wallet": audit_context.get("wallet"),
+            }
+            decision = RiskDecision(
+                approved=False,
+                reason="M1 v5 visibility gate: source not visible yet at open time",
+                reason_code="VISIBILITY_LEAKAGE_SUSPECT",
+                details=details,
+            )
+            RiskEngine().log_no_trade(
+                self.session,
+                decision,
+                signal_id=signal.id,
+                market_id=signal.market_id,
+                wallet_address=audit_context.get("wallet"),
+                details=details,
+            )
+        except Exception as exc:
+            # Never crash on logging — but log the swallowed exception for debug
+            import logging
+            logging.getLogger(__name__).warning(
+                "M1 v5 visibility log failed: %s: %s", type(exc).__name__, exc,
+            )
 
     def _log_allocator_no_trade(
         self,
@@ -1440,6 +1633,51 @@ class PaperTradingEngine:
             return {"executed": False, "reason": "size_zero", "reason_code": "INSUFFICIENT_DATA", "profile": active_profile.name}
         side = (audit_context.get("side") or "BUY").upper()
 
+        # P0.3 (Round 8 2026-05-12) — M1 v5 VISIBILITY GATE.
+        # Refuse trades that are causally impossible: we cannot have copied a
+        # source trade we hadn't SEEN yet. If the source PublicTrade.seen_at is
+        # later than now (the bot's open moment), it means our polling somehow
+        # produced a signal before observing the trade — likely a wrong join,
+        # backfill, or clock skew. Either way, live cannot reproduce it.
+        #
+        # We use a small tolerance to absorb legitimate clock jitter (1-2s).
+        # IMPORTANT: this gate is NOT about copy delay (which can be 100s+
+        # legitimately). It only blocks causality violations. DELAYED_POLL
+        # trades remain accepted — they are just measured for live-readiness
+        # downstream by M1 v5 metric splits.
+        _source_tid = audit_context.get("source_trade_id")
+        if _source_tid:
+            try:
+                from app.models.trade import PublicTrade as _PT
+                _src_row = self.session.get(_PT, _source_tid)
+                if _src_row is not None and _src_row.seen_at is not None:
+                    _seen = _src_row.seen_at
+                    if _seen.tzinfo is None:
+                        _seen = _seen.replace(tzinfo=UTC)
+                    _now = datetime.now(UTC)
+                    _delta_s = (_seen - _now).total_seconds()
+                    # If seen_at is in the future relative to now → causality
+                    # violation. Tolerance 2s for jitter.
+                    if _delta_s > 2.0:
+                        self._log_visibility_leakage(
+                            signal=signal, audit_context=audit_context,
+                            source_trade_id=_source_tid,
+                            source_seen_at=_seen, now_utc=_now, delta_s=_delta_s,
+                        )
+                        return {
+                            "executed": False,
+                            "reason": "visibility_leakage_suspect",
+                            "reason_code": "VISIBILITY_LEAKAGE_SUSPECT",
+                            "profile": active_profile.name,
+                            "source_seen_at": _seen.isoformat(),
+                            "delta_seconds_after_now": round(_delta_s, 3),
+                        }
+            except Exception:
+                # Defence: NEVER block a trade on the gate's own failure.
+                # The gate is best-effort; missing source row means we cannot
+                # verify but also cannot prove violation.
+                pass
+
         # v0.7.8 — re-fetch live market price at open time. This closes a
         # structural optimism in the paper PnL: opening at the wallet's
         # frozen traded-at price assumes zero execution latency, which is
@@ -1468,6 +1706,34 @@ class PaperTradingEngine:
 
         latency_drift = round(execution_price - wallet_signal_price, 6)
 
+        # P0.4 (Round 8): build the entry-price provenance dict for EntryPriceAudit.
+        # We capture everything we have at this point:
+        #   - raw_signal_price = wallet's traded price (source we copied)
+        #   - gamma_mid_at_open = the re-fetched live Gamma price
+        #   - entry_price_source = where the chosen price comes from
+        #   - confidence based on whether re-fetch succeeded
+        # CLOB best_bid/ask remain None — Polymarket CLOB is 404 on the crypto 5min
+        # markets that dominate our flow. live_shadow is computed from gamma+spread/2.
+        _audit_data: dict = {
+            "raw_signal_price": wallet_signal_price,
+            "gamma_mid_at_open": execution_price if exec_source == "gamma_refetched" else None,
+            "clob_best_bid_at_open": None,
+            "clob_best_ask_at_open": None,
+            "spread_at_open": spread,
+            "liquidity_score_at_open": audit_context.get("liquidity_score"),
+            "entry_price_source": (
+                "GAMMA" if exec_source == "gamma_refetched"
+                else "WALLET_FROZEN_FALLBACK" if exec_source == "wallet_frozen_fallback"
+                else "UNKNOWN"
+            ),
+            "price_source_confidence": (
+                "HIGH" if exec_source == "gamma_refetched"
+                else "LOW"
+            ),
+            "source_trade_id": audit_context.get("source_trade_id"),
+            "source_wallet": audit_context.get("wallet"),
+        }
+
         # Use the LIVE price for sizing the position.
         quantity = size_usd / max(execution_price or 1, 0.01)
         trade = self.open_paper_position(
@@ -1482,6 +1748,7 @@ class PaperTradingEngine:
             auto=True,
             notional_usd=size_usd,
             allocator_checked=True,
+            entry_audit=_audit_data,
         )
 
         # v0.7.8 Phase 2 — register the new position with the adaptive

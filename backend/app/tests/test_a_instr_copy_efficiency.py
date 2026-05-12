@@ -46,9 +46,23 @@ def _seed_paired_trade(
     bot_notional: float, wallet_entry_price: float, side: str = "BUY",
     outcome: str = "Yes", category: str = "politics",
     closed_offset_minutes: int = 30,
+    settlement_price: float = 1.0,  # 2026-05-12: needed so v2 reads exit_price properly
 ) -> None:
-    """Insert a PaperTrade (closed) + matching PublicTrade (source wallet)."""
+    """Insert a PaperTrade (closed) + matching PublicTrade (source wallet).
+
+    2026-05-12 (P0 alignment): M1 v2 v2 reads bot_settlement from
+    `close_reason` metadata (`exit_price` field). Fixtures must set this so
+    the counterfactual computation gets the real settlement, not the fallback
+    `average_price`. Default settlement_price=1.0 (= source/bot's outcome won).
+    """
+    import json as _json
     now = datetime.now(UTC) - timedelta(minutes=closed_offset_minutes)
+    _close_reason = "CLOSED_RESOLVED|" + _json.dumps({
+        "exit_price": settlement_price,
+        "holding_minutes": 60.0,
+        "gross_pnl": bot_pnl,
+        "synthetic_orderbook_used": False,
+    })
     session.add(PaperTrade(
         id=f"pt-{market_id}",
         market_id=market_id,
@@ -62,6 +76,7 @@ def _seed_paired_trade(
         opened_at=now - timedelta(hours=1),
         closed_at=now,
         wallet_address=wallet.lower(),
+        close_reason=_close_reason,
     ))
     session.add(PublicTrade(
         id=f"src-{market_id}",
@@ -100,10 +115,11 @@ def test_bot_outperforms_source_excluded_from_ratio():
         _seed_winning_resolved_market(s, "0xmkt1", category="Politics", winning="No")
         _seed_paired_trade(
             s, market_id="0xmkt1", wallet="0xelite",
-            bot_pnl=10.0,  # bot positive
+            bot_pnl=10.0,  # bot positive (despite source losing)
             bot_notional=100.0,
             wallet_entry_price=0.60,
-            outcome="Yes",  # bot bought Yes; market resolved No → bot loses, but pnl=10 is hardcoded
+            outcome="Yes",  # bot bought Yes
+            settlement_price=0.0,  # 2026-05-12: bot's outcome (Yes) LOST → exit_price=0
         )
         report = compute_copy_efficiency_report(s, window_hours=24.0)
         # source counterfactual <= 0 → excluded from main ratio

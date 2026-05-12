@@ -20,6 +20,41 @@ controlled directly. Cohérent avec plan E1 + recommandation Polymarket docs pou
 Le bot doit wrapper USDC.e → pUSD au funding initial + unwrap pour withdraw.
 Voir `pusd_wrapper.py` pour la logique on-chain (CollateralOnramp contract).
 
+═════════════════════════════════════════════════════════════════════════════
+P0.6 (Round 8, 2026-05-12) — SIZE/AMOUNT SEMANTICS REFERENCE
+═════════════════════════════════════════════════════════════════════════════
+
+py-clob-client uses TWO different order arg types with DIFFERENT meanings for
+their `size` / `amount` fields. Mixing them up = mis-sized first live trade.
+
+VERIFIED from py-clob-client/clob_types.py (installed in .venv):
+
+**OrderArgs** (limit orders — `client.create_order` + `post_order`):
+    size: float    # "Size in terms of the ConditionalToken" = SHARES (verbatim doc)
+    price: float   # limit price in (0, 1)
+    Math: notional_usd = price × size
+    Example: price=0.50, size=10  → 10 shares × $0.50 = $5 USDC notional
+    Example: price=0.95, size=10  → 10 shares × $0.95 = $9.50 USDC notional
+
+**MarketOrderArgs** (market orders — `client.create_market_order`):
+    amount: float  # ASYMMETRIC SEMANTICS:
+                   #   BUY  → amount = $$$ USDC to spend
+                   #   SELL → amount = shares to sell
+    Example: BUY  amount=5     → spend $5 USDC, will receive ~$5/price shares
+    Example: SELL amount=10    → sell 10 shares, receive ~10*price USDC
+
+To stay safe, we use limit orders only (OrderArgs) in this executor. The
+public surface (`place_order`) accepts a `notional_usd` parameter that is
+explicitly converted to shares internally via `shares = notional_usd / price`.
+The legacy `size_shares` parameter is also exposed for callers who already
+know the shares count, but at least one of the two MUST be supplied.
+
+References:
+- backend/.venv/lib/python3.12/site-packages/py_clob_client/clob_types.py:46-65
+- https://github.com/Polymarket/py-clob-client/blob/main/py_clob_client/clob_types.py
+- https://docs.polymarket.com/trading/clients/l1 (Polymarket docs)
+═════════════════════════════════════════════════════════════════════════════
+
 References:
 - https://docs.polymarket.com/api-reference/authentication
 - https://docs.polymarket.com/trading/clients/l1
@@ -76,10 +111,15 @@ class PlaceOrderResult:
     placed_at: str = ""
     side: str = ""
     price: float = 0.0
-    size: float = 0.0
+    size: float = 0.0  # SHARES (= OrderArgs.size semantics). USDC notional = price × size.
     error: str | None = None
     attempt: int = 0
     raw_response: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def notional_usd(self) -> float:
+        """Convenience: USDC notional implied by price × size_shares."""
+        return self.price * self.size
 
 
 @dataclass
@@ -219,7 +259,8 @@ class CLOBExecutor:
         token_id: str,
         side: Literal["BUY", "SELL"],
         price: float,
-        size: float,
+        notional_usd: float | None = None,
+        size_shares: float | None = None,
         order_type: Literal["GTC", "GTD", "FOK", "FAK"] = "GTC",
         idempotence_key: str | None = None,
     ) -> PlaceOrderResult:
@@ -229,11 +270,23 @@ class CLOBExecutor:
             token_id: Polymarket outcome token id (= condition_id encoded).
             side: BUY or SELL.
             price: limit price [0.0..1.0].
-            size: USDC notional (will be split into shares by SDK).
+            notional_usd: USDC notional to spend (BUY) or receive (SELL).
+                Internally converted to shares via `shares = notional_usd / price`.
+                Mutually exclusive with size_shares — supply ONE.
+            size_shares: explicit shares count. Use this if caller already knows
+                the shares (e.g. closing a known position).
+                Mutually exclusive with notional_usd.
             order_type: GTC (default) / GTD / FOK (= fill-or-kill) / FAK (= fill-and-kill).
             idempotence_key: UUID for retry-safe submission. Auto-generated if None.
 
         Returns PlaceOrderResult with order_id on success, error on failure.
+
+        P0.6 (Round 8, 2026-05-12) — semantics fix:
+        Pre-fix `size` was documented as "USDC notional (will be split into shares
+        by SDK)". That was WRONG: `OrderArgs.size` is shares (ConditionalToken count),
+        not USDC notional. The SDK does NOT split. A `size=5, price=0.10` order under
+        the old doc would have been 10× too small ($0.50 instead of $5). See header
+        for full semantics reference.
 
         Retry policy: 3 attempts with exponential backoff. The idempotence_key
         is reused across attempts so Polymarket can dedup.
@@ -246,10 +299,27 @@ class CLOBExecutor:
                 success=False, idempotence_key=key,
                 error=f"invalid price {price}, must be in (0, 1) for prediction market",
             )
-        if size <= 0:
+
+        # Resolve size_shares from inputs (exactly one of notional_usd / size_shares).
+        if (notional_usd is None) == (size_shares is None):
             return PlaceOrderResult(
-                success=False, idempotence_key=key, error=f"size must be > 0, got {size}",
+                success=False, idempotence_key=key,
+                error="supply exactly one of notional_usd or size_shares (not both, not neither)",
             )
+        if notional_usd is not None:
+            if notional_usd <= 0:
+                return PlaceOrderResult(
+                    success=False, idempotence_key=key,
+                    error=f"notional_usd must be > 0, got {notional_usd}",
+                )
+            resolved_shares = notional_usd / price
+        else:
+            if size_shares <= 0:  # type: ignore[operator]
+                return PlaceOrderResult(
+                    success=False, idempotence_key=key,
+                    error=f"size_shares must be > 0, got {size_shares}",
+                )
+            resolved_shares = float(size_shares)  # type: ignore[arg-type]
 
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY, SELL
@@ -259,9 +329,11 @@ class CLOBExecutor:
         order_args = OrderArgs(
             token_id=token_id,
             price=price,
-            size=size,
+            size=resolved_shares,  # P0.6: shares, not USDC notional
             side=side_const,
         )
+        # Bind size for the rest of the function (replaces old `size` var)
+        size = resolved_shares
 
         last_err: str | None = None
         for attempt in range(1, MAX_RETRIES + 1):

@@ -5,12 +5,19 @@ markets without a category. But many Market rows have `category=NULL` even
 though the data exists elsewhere (ResolvedMarketRecord, slug, question).
 Result: 811/1318 (62%) of paper trades were rejected unnecessarily.
 
+P0.1 (review Round 8 — 2026-05-12): the previous version called
+`session.get(ResolvedMarketRecord, market_id)` which uses the primary key
+(numeric market_id). When the caller passes a hex `condition_id` (common in
+the paper-trade pipeline — `PaperTrade.market_id` stores the hex form), the
+lookup silently misses. M1 v2 had the same bug. We now apply the same
+fallback used by `copy_efficiency_v3._resolve_market_record()`: try by PK
+first, then by `ResolvedMarketRecord.condition_id == market_id`.
+
 This helper provides a SINGLE source-of-truth for category resolution at
 runtime, applying a deterministic fallback chain:
 
   1. Market.category (canonical, if not null/"Unknown"/"Uncategorised")
-  2. ResolvedMarketRecord.category (= category at market resolution time,
-     often more accurate than the live Market row)
+  2. ResolvedMarketRecord.category — try by PK, then by condition_id
   3. infer_category() on Market.slug / Market.question (= keyword-based
      inference, reuses the existing service)
   4. "Unknown" (legitimate reject — gate keeps small-capital safety)
@@ -22,7 +29,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.services.category_inference import infer_category
 
@@ -38,6 +45,36 @@ def _is_unknown(category: Optional[str]) -> bool:
     if not category:
         return True
     return category.strip().lower() in _UNKNOWN_LABELS
+
+
+def _resolve_market_record(session: Session, market_id: Optional[str]):
+    """Look up a ResolvedMarketRecord by primary key, then by condition_id.
+
+    Why two-step: `PaperTrade.market_id` and the audit pipeline use the hex
+    condition_id form, but `ResolvedMarketRecord` is keyed by the numeric
+    market_id. A direct `session.get(RMR, hex_id)` returns None silently.
+    M1 v2 had this same bug; P0.1 (Round 8) ports the fix here.
+    """
+    if not market_id:
+        return None
+    try:
+        from app.models.wallet import ResolvedMarketRecord
+    except Exception:
+        return None
+    try:
+        rmr = session.get(ResolvedMarketRecord, market_id)
+    except Exception:
+        rmr = None
+    if rmr is not None:
+        return rmr
+    try:
+        return session.exec(
+            select(ResolvedMarketRecord).where(
+                ResolvedMarketRecord.condition_id == market_id
+            )
+        ).first()
+    except Exception:
+        return None
 
 
 def resolve_category_with_fallback(
@@ -72,12 +109,10 @@ def resolve_category_with_fallback(
     if market_row is not None and not _is_unknown(market_row.category):
         return (market_row.category or "Unknown", "market_db")
 
-    # 3. ResolvedMarketRecord.category (more accurate at resolution time)
-    try:
-        from app.models.wallet import ResolvedMarketRecord
-        rmr = session.get(ResolvedMarketRecord, market_id)
-    except Exception:
-        rmr = None
+    # 3. ResolvedMarketRecord.category — two-step lookup (PK then condition_id)
+    #    P0.1: previously used `session.get(RMR, market_id)` only, which missed
+    #    hex-form condition_id callers. Now uses `_resolve_market_record()`.
+    rmr = _resolve_market_record(session, market_id)
 
     if rmr is not None and not _is_unknown(rmr.category):
         return (rmr.category or "Unknown", "resolved_market_record")

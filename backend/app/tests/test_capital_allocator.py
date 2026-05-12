@@ -497,7 +497,9 @@ def test_preset_base_live_loads():
     assert p.live_allowed is True
     assert p.min_ev_lb == 0.05
     assert p.min_stake == 5.0
-    assert p.max_total_exposure == 0.70
+    # P0.5 (Round 8, 2026-05-12): raised 0.70 → 0.95 so CAPITAL_TIER_RULES
+    # ladder (75-95%) actually takes effect via min(base, tier_cap)=tier_cap.
+    assert p.max_total_exposure == 0.95
     assert p.hard_safety_caps  # non-empty
 
 

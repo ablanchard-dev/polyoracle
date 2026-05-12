@@ -13,15 +13,38 @@ allowance is insufficient).
 
 References:
 - https://docs.polymarket.com/concepts/pusd
-- Polygon mainnet addresses (verified Polymarket production):
-    USDC.e:           0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
-    pUSD:             0xb8c77482e45F1F44dE1745F52C74426C631bDD52 (TBD — verify)
-    CollateralOnramp: (TBD — to be filled with verified address)
+- Polygon mainnet addresses (Polymarket production — verified by operator before live):
+    USDC.e:           0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174  (Polygon native bridged USDC)
+    pUSD:             [PLACEHOLDER — verify before live]
+    CollateralOnramp: [PLACEHOLDER — verify before live]
 
-⚠ NOTE: Addresses must be VERIFIED on Polygonscan before any real-money use.
-The contract address for CollateralOnramp evolves with Polymarket deployments —
-DO NOT hardcode without re-verification. We expose a `verify_addresses()`
-helper that the operator MUST run + confirm before Phase E8 first live trade.
+⚠ P0.7 (Round 8, 2026-05-12) — MANDATORY OPERATOR VERIFICATION before E8 first live trade:
+
+Verification checklist (run via `address_verification_checklist()` for the list):
+
+  1. Open Polymarket app on polygon (https://polymarket.com), connect a metamask
+     to read the deployed contract addresses used by the app's UI.
+  2. Cross-reference with Polymarket source code on GitHub:
+     - https://github.com/Polymarket/exchange-contracts
+     - https://github.com/Polymarket/polymarket-contracts
+     Look for the deployed addresses in `deployments/polygon/` or equivalent.
+  3. Verify on Polygonscan that the addresses are:
+     a. Contracts (not EOAs)
+     b. Verified source code matches the Polymarket repos
+     c. Active recent transactions consistent with wrap/unwrap volume
+  4. Cross-check with at least one other live integrator (gnosis-safe, dune query,
+     or another bot project that publishes its config).
+  5. Once verified, set env vars in `.env.live`:
+       PUSD_ADDRESS=0x...
+       COLLATERAL_ONRAMP_ADDRESS=0x...
+  6. The wrapper's `_addresses_verified()` guard then unblocks wrap/unwrap calls.
+
+NEVER hardcode addresses without re-verification. Drain risk if attacker
+deploys a malicious lookalike at a similar-looking address.
+
+The placeholders are explicitly the zero-address (`0x00...`) so any accidental
+call without verified env vars will fail at the network level even if our
+software guard is somehow bypassed. Defence-in-depth.
 """
 
 from __future__ import annotations
@@ -342,3 +365,53 @@ def build_wrapper_from_env() -> PUSDWrapper | None:
         onramp_address=os.environ.get("COLLATERAL_ONRAMP_ADDRESS", COLLATERAL_ONRAMP_ADDRESS_PLACEHOLDER),
         dry_run=bool(int(os.environ.get("PUSD_DRY_RUN", "0"))),
     )
+
+
+def address_verification_checklist() -> dict[str, Any]:
+    """P0.7 (Round 8) — return the operator verification checklist for pUSD
+    and CollateralOnramp addresses. Operator MUST complete this manually
+    before any real-money wrap/unwrap call.
+
+    The function is also used by tests to assert the guards remain in place.
+    """
+    return {
+        "phase": "P0.7 operator verification (manual, ops-only)",
+        "blocker_for": "E8 first live trade, any real wrap/unwrap",
+        "addresses_to_verify": {
+            "pUSD": {
+                "current_placeholder": PUSD_ADDRESS_PLACEHOLDER,
+                "env_var": "PUSD_ADDRESS",
+                "status": "UNVERIFIED — DO NOT USE LIVE",
+            },
+            "CollateralOnramp": {
+                "current_placeholder": COLLATERAL_ONRAMP_ADDRESS_PLACEHOLDER,
+                "env_var": "COLLATERAL_ONRAMP_ADDRESS",
+                "status": "UNVERIFIED — DO NOT USE LIVE",
+            },
+            "USDC.e": {
+                "current_value": USDC_E_ADDRESS,
+                "env_var": "USDC_E_ADDRESS",
+                "status": "Well-known Polygon native bridged USDC — low risk",
+            },
+        },
+        "verification_steps": [
+            "1. Open https://polymarket.com on Polygon mainnet, connect a metamask.",
+            "2. Read the deployed contract addresses from the app's UI calls (devtools network tab).",
+            "3. Cross-reference with Polymarket source code at https://github.com/Polymarket.",
+            "4. Verify on Polygonscan that addresses are contracts (not EOAs).",
+            "5. Cross-check with at least one other public integrator config.",
+            "6. Set env vars in `.env.live`: PUSD_ADDRESS, COLLATERAL_ONRAMP_ADDRESS.",
+            "7. Re-run this checklist — status fields should flip to VERIFIED.",
+        ],
+        "guard_active": (
+            PUSD_ADDRESS_PLACEHOLDER == "0x0000000000000000000000000000000000000000"
+            and COLLATERAL_ONRAMP_ADDRESS_PLACEHOLDER == "0x0000000000000000000000000000000000000000"
+        ),
+        "guard_explanation": (
+            "Placeholders are the zero-address. The wrapper's _addresses_verified() "
+            "method returns False until set_addresses() is called with verified "
+            "addresses from set_addresses() or env vars. wrap() and unwrap() refuse "
+            "to execute with placeholders. Defence-in-depth: zero-address tx would "
+            "also fail at the EVM level."
+        ),
+    }

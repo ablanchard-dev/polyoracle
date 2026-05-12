@@ -80,7 +80,7 @@ def test_executor_place_order_dryrun_returns_order_id(dryrun_config, tmp_path):
         token_id="123456789",
         side="BUY",
         price=0.55,
-        size=5.0,
+        notional_usd=5.0,  # P0.6: explicit USDC notional → SDK shares conversion
     )
     assert isinstance(result, PlaceOrderResult)
     assert result.success is True
@@ -93,7 +93,7 @@ def test_executor_place_order_rejects_invalid_price(dryrun_config, tmp_path):
     dryrun_config.creds_cache_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     for bad_price in (0, 1.0, 1.5, -0.1):
-        result = ex.place_order(token_id="abc", side="BUY", price=bad_price, size=5.0)
+        result = ex.place_order(token_id="abc", side="BUY", price=bad_price, notional_usd=5.0)
         assert result.success is False
         assert "invalid price" in result.error.lower()
 
@@ -101,9 +101,9 @@ def test_executor_place_order_rejects_invalid_price(dryrun_config, tmp_path):
 def test_executor_place_order_rejects_zero_size(dryrun_config, tmp_path):
     dryrun_config.creds_cache_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
-    result = ex.place_order(token_id="abc", side="BUY", price=0.5, size=0)
+    result = ex.place_order(token_id="abc", side="BUY", price=0.5, notional_usd=0)
     assert result.success is False
-    assert "size" in result.error.lower()
+    assert "notional_usd" in result.error.lower()
 
 
 def test_executor_idempotence_key_propagated(dryrun_config, tmp_path):
@@ -113,7 +113,7 @@ def test_executor_idempotence_key_propagated(dryrun_config, tmp_path):
         token_id="123",
         side="SELL",
         price=0.45,
-        size=10.0,
+        size_shares=10.0,  # P0.6: explicit shares
         idempotence_key="op-key-test-001",
     )
     assert result.idempotence_key == "op-key-test-001"

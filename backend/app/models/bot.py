@@ -26,6 +26,12 @@ class BotState(SQLModel, table=True):
     # ELITE-paper bypass and are NOT decisional for live go/no-go. Set via
     # POST /bot/strict-cutover when starting Phase B baseline strict.
     strict_cutover_at: datetime | None = None
+    # P0 (Round 8, 2026-05-12): timestamp of the P0 truth fixes apply moment.
+    # Trades opened ≥ this date carry the new instrumentation (EntryPriceAudit,
+    # M1 v5 visibility gate, etc.). Used for A/B comparison vs pre-P0 baseline.
+    # Not a cutover (capital is preserved across — see hard_rules.md). It's a
+    # segmentation marker for analytics + dashboards.
+    p0_fix_applied_at: datetime | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
