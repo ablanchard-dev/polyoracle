@@ -178,8 +178,12 @@ def ensure_sqlite_schema() -> None:
             "candidate_status": "VARCHAR",
         },
         # v0.7.8 P6 — R-based dynamic sizing state machine
+        # A-T0 (2026-05-11): strict_cutover_at
+        # P0 Round 8 (2026-05-12): p0_fix_applied_at marker for A/B
         "botstate": {
             "current_r_multiplier": "FLOAT DEFAULT 2.0",
+            "strict_cutover_at": "DATETIME",
+            "p0_fix_applied_at": "DATETIME",
         },
     }
     with engine.begin() as connection:
