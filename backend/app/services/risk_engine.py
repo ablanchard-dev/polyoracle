@@ -275,13 +275,24 @@ class RiskEngine:
             # public CLOB orderbook (404). In paper mode, accept the trade —
             # the ELITE edge is proven on 100+ resolved markets. In live mode,
             # this MUST be blocked (need real orderbook for slippage/fill).
-            if candidate_status != "ELITE" or not self.settings.paper_trading_enabled:
+            # 2026-05-11 Phase A: paper_live_strict=True forces reject
+            # exactly like live (no ELITE+paper exception).
+            if (
+                candidate_status != "ELITE"
+                or not self.settings.paper_trading_enabled
+                or self.settings.paper_live_strict
+            ):
                 return RiskDecision(False, "Orderbook data missing", reason_code="INSUFFICIENT_DATA", details={"orderbook_quality": orderbook_quality})
         if profile.require_copyable_edge and copyable_edge_score < self.settings.min_copyable_edge:
             # v0.7.8 P6 B17: ELITE wallets with missing orderbook data get
             # artificially low copyable_edge scores. In paper mode, skip this
             # check for ELITE — their edge is proven via 100+ resolved markets.
-            if candidate_status != "ELITE" or not self.settings.paper_trading_enabled:
+            # 2026-05-11 Phase A: paper_live_strict=True forces reject.
+            if (
+                candidate_status != "ELITE"
+                or not self.settings.paper_trading_enabled
+                or self.settings.paper_live_strict
+            ):
                 return RiskDecision(False, "Copyable edge insufficient", reason_code="NO_COPYABLE_EDGE", details={"copyable_edge_score": copyable_edge_score})
         if signal_score < self.settings.min_signal_score:
             return RiskDecision(False, "Signal score below minimum", reason_code="LOW_SIGNAL_SCORE", details={"signal_score": signal_score})

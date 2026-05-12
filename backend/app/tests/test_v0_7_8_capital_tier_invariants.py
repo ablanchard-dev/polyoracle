@@ -300,14 +300,15 @@ def test_invariant_5_clean_elite_signal_accepts_at_every_tier(capital_eur):
     (220, False),    # TINY
     (450, False),    # MICRO
     (700, False),    # SMALL — still no STRONG
-    (1000, True),    # MEDIUM — STRONG GOLD overflow allowed
-    (3000, True),    # LARGE
-    (7000, True),    # XL
-    (9000, True),    # XXL
-    (15000, True),   # ELITE_OPEN
-    (40000, True),   # GIGA
-    (70000, False),  # HUGE — preservation, no STRONG
-    (130000, False), # INST
+    # 12-tier spec 2026-05-09: STRONG GOLD overflow ONLY from ELITE_OPEN ($10k+)
+    (1000, False),   # MEDIUM — ELITE-only, no STRONG
+    (3000, False),   # LARGE — ELITE-only
+    (7000, False),   # XL — ELITE-only
+    (9000, False),   # XXL — ELITE-only
+    (15000, True),   # ELITE_OPEN — STRONG GOLD overflow starts
+    (40000, True),   # GIGA — STRONG GOLD overflow
+    (70000, True),   # HUGE — STRONG GOLD overflow (NO preservation cap in 2026-05-09 spec)
+    (130000, True),  # INST — STRONG GOLD overflow
 ])
 def test_invariant_6_strong_filtered_at_small_capital(capital_eur, strong_should_pass):
     a = CapitalAllocator()

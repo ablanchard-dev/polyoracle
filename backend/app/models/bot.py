@@ -21,6 +21,11 @@ class BotState(SQLModel, table=True):
     # 1.0 = "losing" posture (1R per trade — anti-drawdown until next win)
     # Updated atomically on each close: realized_pnl > 0 → 2.0, else → 1.0.
     current_r_multiplier: float = 2.0
+    # A-T0 (2026-05-11): timestamp of the PAPER_LIVE_STRICT cutover. All
+    # PaperTrade rows opened BEFORE this date were taken under the legacy
+    # ELITE-paper bypass and are NOT decisional for live go/no-go. Set via
+    # POST /bot/strict-cutover when starting Phase B baseline strict.
+    strict_cutover_at: datetime | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

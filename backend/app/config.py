@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     postgres_enabled: bool = False
     redis_enabled: bool = False
     paper_trading_enabled: bool = True
+    # P0/Phase A 2026-05-11: when True, paper applies EXACTLY the same gates
+    # as live (spread/liquidity/orderbook/copyable_edge/unknown-category).
+    # Defaults False for safe rollout — flip to True to neutralize the
+    # _elite_paper_bypass and the risk_engine ELITE+paper exceptions.
+    paper_live_strict: bool = False
     mock_data_enabled: bool = True
     polymarket_public_enabled: bool = True
     market_fetch_limit: int = 100

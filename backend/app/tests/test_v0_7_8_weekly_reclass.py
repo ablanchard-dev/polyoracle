@@ -110,10 +110,14 @@ def _seed_mfwr(session, *, n_elite=40, n_strong_promotable=10,
 
 
 def test_promote_strong_meeting_elite_criteria():
+    # B21 fix 2026-05-09: _evaluate_for_promotion uses W+L confirmés
+    # (resolved_winning_markets + resolved_losing_markets), not resolved_markets_traded.
     class _Row:
         address = "0xtest"
         composite_score = ELITE_MIN_COMPOSITE_SCORE + 1
         resolved_markets_traded = ELITE_MIN_RESOLVED_MARKETS + 5
+        resolved_winning_markets = 100  # W+L = 105 ≥ 100
+        resolved_losing_markets = 5
         resolved_market_win_rate = ELITE_MIN_WIN_RATE + 0.05
 
     decision = _evaluate_for_promotion(_Row(), "STRONG")
@@ -127,7 +131,9 @@ def test_no_promote_strong_below_composite_threshold():
         address = "0xtest"
         composite_score = ELITE_MIN_COMPOSITE_SCORE - 5  # too low
         resolved_markets_traded = 100  # high
-        resolved_market_win_rate = 0.80  # high
+        resolved_winning_markets = 80
+        resolved_losing_markets = 20  # W+L = 100
+        resolved_market_win_rate = 0.80  # also too low (< 0.90)
 
     assert _evaluate_for_promotion(_Row(), "STRONG") is None
 
@@ -137,6 +143,8 @@ def test_no_promote_strong_with_low_sample():
         address = "0xtest"
         composite_score = 99
         resolved_markets_traded = ELITE_MIN_RESOLVED_MARKETS - 5  # too few
+        resolved_winning_markets = 94
+        resolved_losing_markets = 1  # W+L = 95 < ELITE_MIN_RESOLVED_MARKETS
         resolved_market_win_rate = 0.99
 
     assert _evaluate_for_promotion(_Row(), "STRONG") is None
@@ -147,6 +155,8 @@ def test_no_promote_already_elite():
         address = "0xtest"
         composite_score = 99
         resolved_markets_traded = 100
+        resolved_winning_markets = 80
+        resolved_losing_markets = 20  # W+L = 100
         resolved_market_win_rate = 0.80
 
     assert _evaluate_for_promotion(_Row(), "ELITE") is None

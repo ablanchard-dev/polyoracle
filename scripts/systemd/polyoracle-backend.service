@@ -1,0 +1,58 @@
+# Phase D D1 (2026-05-11) — systemd unit pour backend POLYORACLE.
+#
+# Install:
+#   sudo cp scripts/systemd/polyoracle-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable polyoracle-backend.service
+#   sudo systemctl start polyoracle-backend.service
+#
+# Status:
+#   systemctl status polyoracle-backend
+#   journalctl -u polyoracle-backend -f
+#
+# Critère go (D1): reboot PC → bot revient automatiquement.
+
+[Unit]
+Description=POLYORACLE backend (FastAPI + polling engine)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=dexter
+Group=dexter
+WorkingDirectory=/opt/app/polyoracle/backend
+Environment="PYTHONPATH=/opt/app/polyoracle/backend"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/opt/app/polyoracle/backend/.env
+
+ExecStart=/opt/app/polyoracle/backend/.venv/bin/python dev_server.py
+
+# Resource limits (D5 RSS guard preview — systemd-level cap as belt + braces)
+MemoryMax=3G
+MemoryHigh=2G
+
+# Restart policy (D2 watchdog) — auto-restart on failure with exponential backoff
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Logging to journald (greppable via journalctl)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polyoracle-backend
+
+# Security hardening (defense in depth, no privilege escalation)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/app/polyoracle/data /opt/app/polyoracle/backend/_smoke_strict_logs /opt/app/polyoracle/backend/_backups_v0_7_8_smoke_pre
+
+# No suspend mid-trade — interactive sleep handled by D2 watchdog instead
+WatchdogSec=120s
+
+[Install]
+WantedBy=multi-user.target

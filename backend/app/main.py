@@ -16,6 +16,7 @@ from app.api.routes import (
     signals,
     storage,
     trades,
+    vault,
     wallets,
 )
 from app.config import get_settings
@@ -69,6 +70,7 @@ app.include_router(settings_routes.router)
 app.include_router(storage.router)
 app.include_router(logs.router)
 app.include_router(observability.router)
+app.include_router(vault.router)
 app.include_router(debug.router)
 
 

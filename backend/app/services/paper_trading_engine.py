@@ -116,6 +116,8 @@ def _close_metadata_payload(
     entry_fee: float = 0.0, exit_fee: float = 0.0, gross_pnl: float = 0.0,
     raw_exit_price: float | None = None, exit_slippage: float = 0.0,
     synthetic_orderbook_used: bool = False,
+    resolved_category: str | None = None,
+    category_source: str | None = None,
 ) -> str:
     """Pack close metrics into the close_reason column as a JSON suffix.
 
@@ -124,10 +126,10 @@ def _close_metadata_payload(
 
     v0.7.8 — adds B12 fee accounting fields.
     2026-05-07 — adds synthetic-orderbook tracing so we can answer
-    post-paper "did the synth penalize too much?". Stores raw vs effective
-    exit price + exit slippage applied. Combined with PaperTrade.slippage
-    (entry slip already stored) + average_price (effective entry), every
-    trade is fully reconstructible to its naive (pre-synth) PnL.
+    post-paper "did the synth penalize too much?".
+    2026-05-11 P0.5 — adds resolved_category + category_source so dashboards
+    can show the REAL category (not "Unknown") after the category_resolver
+    fallback chain (hint → Market.category → ResolvedMarketRecord → infer).
     """
     import json as _json
     payload = {
@@ -142,6 +144,10 @@ def _close_metadata_payload(
     }
     if raw_exit_price is not None:
         payload["raw_exit_price"] = round(raw_exit_price, 6)
+    if resolved_category is not None:
+        payload["resolved_category"] = resolved_category
+    if category_source is not None:
+        payload["category_source"] = category_source
     return _json.dumps(payload)
 
 
@@ -570,7 +576,12 @@ class PaperTradingEngine:
 
     def close_paper_position(self, trade: PaperTrade, exit_price: float, reason: str | None = None) -> PaperTrade:
         # 2026-05-07: same synthetic exit slippage as _close_paper_with_reason.
-        if reason == CLOSE_REASON_RESOLVED:
+        # 2026-05-11 (P0.4 hot-fix): treat "market_resolved" as resolved (the
+        # string used by evaluate_open_positions). Pre-fix, only the canonical
+        # constant CLOSE_REASON_RESOLVED matched, causing slippage+exit_fee
+        # applied wrongly to oracle settlements (paper PnL underestimated).
+        _is_resolved_close = reason in (CLOSE_REASON_RESOLVED, "market_resolved")
+        if _is_resolved_close:
             effective_exit = float(exit_price)
         else:
             effective_exit, _ = _apply_synth_exit_slippage(exit_price, trade.side or "BUY")
@@ -583,7 +594,7 @@ class PaperTradingEngine:
         # fee unless this is an explicit RESOLVED close (manual closes
         # are mid-market exits = both legs charged).
         entry_fee = _b12_fee_for(self.session, trade.market_id, trade.average_price, trade.quantity)
-        if reason == CLOSE_REASON_RESOLVED:
+        if _is_resolved_close:
             exit_fee = 0.0
         else:
             exit_fee = _b12_fee_for(self.session, trade.market_id, effective_exit, trade.quantity)
@@ -604,8 +615,23 @@ class PaperTradingEngine:
 
     def compute_paper_pnl(self) -> float:
         # 2026-05-07 — leak fix: SQL SUM instead of loading all rows.
+        # 2026-05-11 (A-T0 amendment): when BotState.strict_cutover_at is set,
+        # only sum trades opened AFTER cutover. Pre-cutover trades were taken
+        # under the legacy ELITE-paper bypass and are NOT representative of
+        # strict-mode PnL (operator decision: zero capital preservation when
+        # bypass is killed — baseline must measure pure strict mode).
         from sqlalchemy import func
-        total = self.session.exec(select(func.sum(PaperTrade.realized_pnl))).one()
+        state = self.session.get(BotState, 1)
+        cutover = getattr(state, "strict_cutover_at", None) if state else None
+        if cutover is not None:
+            if cutover.tzinfo is None:
+                cutover = cutover.replace(tzinfo=UTC)
+            total = self.session.exec(
+                select(func.sum(PaperTrade.realized_pnl))
+                .where(PaperTrade.opened_at >= cutover)
+            ).one()
+        else:
+            total = self.session.exec(select(func.sum(PaperTrade.realized_pnl))).one()
         return round(float(total or 0.0), 2)
 
     def compute_unrealized_pnl(self) -> float:
@@ -972,6 +998,66 @@ class PaperTradingEngine:
             wallet_address=wallet_address,
             details=audit_details,
         )
+        self._maybe_log_shadow_bypass(
+            reason_code=allocator_decision.reason_code,
+            signal=signal,
+            wallet_address=wallet_address,
+            candidate_status=str(audit_details.get("status") or audit_details.get("tier") or ""),
+            audit_details=audit_details,
+        )
+
+    # ------- A4 (2026-05-11): Shadow log inversé "would_have_passed_bypass" -------
+    # When PAPER_LIVE_STRICT is on and we reject a trade for a reason the
+    # legacy _elite_paper_bypass would have skipped, emit an additional
+    # NoTradeDecision with reason_code=SHADOW_BYPASS_<original>. Lets the
+    # operator quantify the "fake cadence" of the pre-strict era via a
+    # simple SQL: SELECT reason_code, COUNT(*) FROM notradedecision
+    # WHERE reason_code LIKE 'SHADOW_BYPASS_%' GROUP BY reason_code.
+    _SHADOW_BYPASSABLE_CODES = frozenset({
+        "WIDE_SPREAD",
+        "LOW_LIQUIDITY",
+        "BAD_ORDERBOOK",
+        "INSUFFICIENT_DATA",
+        "NO_COPYABLE_EDGE",
+        "UNKNOWN_CATEGORY",
+        "UNKNOWN_DEADLINE",
+    })
+
+    def _maybe_log_shadow_bypass(
+        self,
+        *,
+        reason_code: str | None,
+        signal: Signal,
+        wallet_address: str | None,
+        candidate_status: str,
+        audit_details: dict[str, Any] | None = None,
+    ) -> None:
+        if not getattr(self.settings, "paper_live_strict", False):
+            return
+        if not self.settings.paper_trading_enabled:
+            return
+        if candidate_status != "ELITE":
+            return
+        if not reason_code or reason_code not in self._SHADOW_BYPASSABLE_CODES:
+            return
+        from uuid import uuid4 as _uuid4
+        import json as _json
+        from app.models.trade import NoTradeDecision as _NoTradeDecision
+        shadow = _NoTradeDecision(
+            id=str(_uuid4()),
+            signal_id=signal.id,
+            market_id=signal.market_id,
+            wallet_address=wallet_address,
+            reason_code=f"SHADOW_BYPASS_{reason_code}",
+            details=_json.dumps({
+                "original_reason_code": reason_code,
+                "would_have_passed_under_bypass": True,
+                "wallet_tier": candidate_status,
+                "audit_details": audit_details or {},
+            }),
+        )
+        self.session.add(shadow)
+        self.session.commit()
 
     def _cluster_check(
         self,
@@ -1186,6 +1272,15 @@ class PaperTradingEngine:
                 wallet_address=wallet_address,
                 details={"profile": active_profile.name, "candidate_status": candidate_status, **(decision.details or {})},
             )
+            # A4 (2026-05-11): emit shadow log if strict mode rejected a trade
+            # the legacy ELITE bypass would have skipped.
+            self._maybe_log_shadow_bypass(
+                reason_code=decision.reason_code,
+                signal=signal,
+                wallet_address=wallet_address,
+                candidate_status=str(candidate_status or ""),
+                audit_details={"profile": active_profile.name, "source": "risk_engine"},
+            )
             return {
                 "executed": False,
                 "reason": decision.reason,
@@ -1206,7 +1301,21 @@ class PaperTradingEngine:
             ev_lower_bound_f = float(ev_lower_bound or 0.0)
         except (TypeError, ValueError):
             ev_lower_bound_f = 0.0
-        category = str(audit_context.get("category") or "Uncategorised")
+        # 2026-05-11 (Option B fix UNKNOWN_CATEGORY root cause):
+        # use the cascade resolver instead of the raw audit_context value.
+        # Fallback chain: hint → Market.category → ResolvedMarketRecord.category
+        # → infer_category(slug, question) → "Unknown". This eliminates ~62%
+        # of paper trade rejections that were due to Market.category=NULL
+        # while the category was actually known via other sources.
+        from app.services.category_resolver import resolve_category_with_fallback
+        _hint_cat = audit_context.get("category")
+        category, _category_source = resolve_category_with_fallback(
+            self.session, signal.market_id, hint_category=_hint_cat,
+        )
+        if not category:
+            category = "Uncategorised"
+        # Surface the resolution source for debugging / shadow-log audits
+        audit_context["_category_resolution_source"] = _category_source
         fee_buffer, category_warning = category_fee_buffer(category)
         total_exposure_usd = self.open_notional_usd()
         capital_available = self._capital_available_usd()

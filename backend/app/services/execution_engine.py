@@ -31,7 +31,38 @@ class ExecutionEngine:
         return state
 
     def status(self) -> BotStatus:
+        # P0.3 (2026-05-11): recompute paper_pnl on-read via PaperTradingEngine
+        # to keep /bot/status coherent with /paper/report.
+        # P0.2 (2026-05-11 evening, review Round 4 feedback): same recompute
+        # on-read for open_positions + exposure + active_signals. BotState
+        # values are stale cache, DB is truth. CRITICAL for live mode where
+        # dashboard truth-source is non-negotiable.
+        from sqlalchemy import func
+        from sqlmodel import select as _select
+        from app.models.signal import Signal
+        from app.models.trade import PaperTrade
+        from app.services.paper_trading_engine import PaperTradingEngine
+
         state = self._state()
+        engine = PaperTradingEngine(self.session)
+        paper_pnl = engine.compute_paper_pnl()
+
+        # Open positions count + notional exposure from DB
+        open_rows = self.session.exec(
+            _select(PaperTrade).where(PaperTrade.status == "open")
+        ).all()
+        open_count = len(open_rows)
+        exposure_usd = round(sum(float(t.notional_usd or 0.0) for t in open_rows), 4)
+
+        # Active signals = signals with status != 'closed' or decision PAPER_TRADE not yet processed
+        try:
+            active_signals_count = self.session.exec(
+                _select(func.count(Signal.id)).where(Signal.status == "watch")
+            ).one()
+            active_signals_count = int(active_signals_count or 0)
+        except Exception:
+            active_signals_count = state.active_signals  # fallback to stale
+
         return BotStatus(
             mode=state.mode,
             running=state.running,
@@ -40,10 +71,10 @@ class ExecutionEngine:
             live_enabled=state.live_enabled,
             live_blocked_reason=self.compliance.live_blocked_reason(),
             paper_capital=state.paper_capital,
-            paper_pnl=state.paper_pnl,
-            exposure=state.exposure,
-            open_positions=state.open_positions,
-            active_signals=state.active_signals,
+            paper_pnl=paper_pnl,
+            exposure=exposure_usd,
+            open_positions=open_count,
+            active_signals=active_signals_count,
             last_error=state.last_error,
         )
 

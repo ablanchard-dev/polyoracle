@@ -99,3 +99,60 @@ async def polling_stop() -> dict:
 @router.get("/polling/status")
 def polling_status() -> dict:
     return WalletPollingEngine.instance().status()
+
+
+# ---------------- A-T0 strict cutover (Phase A — 2026-05-11) ----------------
+
+
+@router.post("/strict-cutover")
+def strict_cutover(session: Session = Depends(get_session)) -> dict:
+    """Mark the PAPER_LIVE_STRICT cutover. Trades opened BEFORE this
+    timestamp were taken under the legacy ELITE-paper bypass and are
+    NOT decisional for live go/no-go. To be called once when starting
+    Phase B baseline strict (after PAPER_LIVE_STRICT=true is enabled).
+    Idempotent: re-calling overwrites the marker (bot loop preserves
+    BotState.paper_capital, no capital reset)."""
+    from datetime import UTC as _UTC, datetime as _datetime
+    from app.models.bot import BotState
+    from app.services.audit_logger import AuditLogger
+
+    state = session.get(BotState, 1)
+    if state is None:
+        raise HTTPException(status_code=400, detail="BotState not initialised")
+    now = _datetime.now(_UTC)
+    state.strict_cutover_at = now
+    state.updated_at = now
+    session.add(state)
+    AuditLogger(session).log(
+        "STRICT_CUTOVER",
+        state.mode,
+        result=f"cutover_at={now.isoformat()}",
+    )
+    session.commit()
+    return {
+        "strict_cutover_at": now.isoformat(),
+        "paper_capital_preserved": state.paper_capital,
+        "message": "Cutover recorded. Trades opened after this are decisional.",
+    }
+
+
+@router.get("/strict-cutover")
+def strict_cutover_status(session: Session = Depends(get_session)) -> dict:
+    from app.models.bot import BotState
+    state = session.get(BotState, 1)
+    if state is None or state.strict_cutover_at is None:
+        return {"strict_cutover_at": None, "trades_after_cutover": 0}
+    cutover = state.strict_cutover_at
+    if cutover.tzinfo is None:
+        from datetime import UTC as _UTC
+        cutover = cutover.replace(tzinfo=_UTC)
+    from sqlmodel import select as _select
+    from app.models.trade import PaperTrade
+    after = list(session.exec(
+        _select(PaperTrade).where(PaperTrade.opened_at >= cutover)
+    ).all())
+    return {
+        "strict_cutover_at": cutover.isoformat(),
+        "trades_after_cutover": len(after),
+        "paper_capital": state.paper_capital,
+    }

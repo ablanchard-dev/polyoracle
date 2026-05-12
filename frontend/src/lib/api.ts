@@ -817,3 +817,80 @@ export function runReclass(dryRun: boolean = false) {
 export function getPromotionCandidates() {
   return request<PromotionCandidatesResponse>("/discovery/reclass/promotion-candidates");
 }
+
+// ===================== Phase A 2026-05-11 — M1 / M5 / A-T0 =====================
+
+export type CopyEfficiencyReport = {
+  window_hours: number;
+  sample_size: number;
+  sample_size_excluded: number;
+  global_ratio: number | null;
+  bot_pnl_total: number;
+  source_counterfactual_total: number;
+  bot_outperforms_source_count: number;
+  by_category: Record<string, {
+    n: number;
+    ratio: number | null;
+    threshold: number;
+    breached: boolean;
+    bot_pnl: number;
+    counterfactual: number;
+  }>;
+  by_wallet_top: Array<{ wallet: string; ratio: number; n: number }>;
+  by_wallet_bottom: Array<{ wallet: string; ratio: number; n: number }>;
+  threshold_breaches: Array<{
+    category: string;
+    ratio: number;
+    threshold: number;
+    sample_size: number;
+  }>;
+  classification: string;
+};
+
+export function getCopyEfficiency(window: "24h" | "7d" | "30d" = "24h") {
+  return request<CopyEfficiencyReport>(`/edge/copy-efficiency?window=${window}`);
+}
+
+export type UtilizationMetrics = {
+  window_hours: number;
+  sample_size: number;
+  open_positions_now: number;
+  max_open_positions: number;
+  max_pos_utilization_avg: number;
+  max_pos_utilization_p95: number;
+  slot_block_rate: number;
+  capital_utilization_avg: number;
+  capital_utilization_p95: number;
+  idle_capital_pct: number;
+  opportunity_fill_rate: number;
+  fresh_signal_rate_per_hour: number;
+  stale_backfill_rate: number;
+  risk_gate_rate: number;
+  rejection_breakdown: Record<string, number>;
+  bound_classification: string;
+  bound_reasoning: string;
+};
+
+export function getUtilization(windowHours: number = 24) {
+  return request<UtilizationMetrics>(`/observability/utilization?window_hours=${windowHours}`);
+}
+
+export type StrictCutoverStatus = {
+  strict_cutover_at: string | null;
+  trades_after_cutover: number;
+  paper_capital?: number;
+};
+
+export type StrictCutoverPostResponse = {
+  strict_cutover_at: string;
+  paper_capital_preserved: number;
+  message: string;
+};
+
+export function getStrictCutoverStatus() {
+  return request<StrictCutoverStatus>("/bot/strict-cutover");
+}
+
+export function postStrictCutover() {
+  return request<StrictCutoverPostResponse>("/bot/strict-cutover", { method: "POST" });
+}

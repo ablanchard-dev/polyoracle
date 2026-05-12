@@ -234,11 +234,11 @@ def test_replay_parity_with_paper_engine_inputs():
 # ---------------- 6 — no STRONG in ELITE-only ----------------
 
 
-def test_strong_filtered_at_nano_and_huge_v0_7_8_p6_12tier():
-    """v0.7.8 P6 — 12-tier refactor 2026-05-06:
-    NANO/TINY/MICRO/SMALL (<$1k)   = ELITE only (no STRONG below $1k)
-    MEDIUM-GIGA ($1k-$63.99k)      = ELITE + STRONG GOLD overflow
-    HUGE/INST   (≥$64k)            = ELITE only (preservation)."""
+def test_strong_filtered_below_elite_open_v0_7_8_p6_12tier():
+    """v0.7.8 P6 — 12-tier refactor 2026-05-09:
+    NANO→XXL (<$10k)              = ELITE only (no STRONG below $10k)
+    ELITE_OPEN→INST (≥$10k)       = ELITE + STRONG GOLD overflow
+    Spec 2026-05-09: HUGE/INST KEEP STRONG GOLD (no preservation cap)."""
     p = _params(allowed_tiers=frozenset({"ELITE", "STRONG"}))
 
     # NANO — STRONG filtered out
@@ -248,59 +248,68 @@ def test_strong_filtered_at_nano_and_huge_v0_7_8_p6_12tier():
     d_50 = CapitalAllocator().evaluate_trade(_signal(wallet_tier="STRONG"), s_50, p)
     assert d_50.reason_code == "WALLET_TIER", f"STRONG must reject at NANO, got {d_50.reason_code}"
 
-    # MEDIUM — STRONG GOLD overflow allowed
+    # MEDIUM — STRONG REJECTED (12-tier 2026-05-09: ELITE-only below $10k)
     eff_1k = compute_dynamic_thresholds(1080.0, p)
-    assert "STRONG" in eff_1k.allowed_tiers
-    assert "ELITE" in eff_1k.allowed_tiers
+    assert eff_1k.allowed_tiers == frozenset({"ELITE"}), \
+        f"MEDIUM must be ELITE-only, got {eff_1k.allowed_tiers}"
+
+    # XXL — STRONG still REJECTED (last ELITE-only tier)
+    eff_9k = compute_dynamic_thresholds(9000.0, p)
+    assert eff_9k.allowed_tiers == frozenset({"ELITE"})
+
+    # ELITE_OPEN — STRONG GOLD overflow STARTS here
+    eff_15k = compute_dynamic_thresholds(15_000.0, p)
+    assert "STRONG" in eff_15k.allowed_tiers
+    assert "ELITE" in eff_15k.allowed_tiers
 
     # GIGA — STRONG still allowed
     eff_60k = compute_dynamic_thresholds(60_000.0, p)
     assert "STRONG" in eff_60k.allowed_tiers
 
-    # HUGE — STRONG filtered out (preservation)
+    # HUGE — STRONG GOLD KEPT (no preservation cap in 2026-05-09 spec)
     eff_70k = compute_dynamic_thresholds(70_000.0, p)
-    assert eff_70k.allowed_tiers == frozenset({"ELITE"})
+    assert "STRONG" in eff_70k.allowed_tiers, "HUGE must keep STRONG GOLD overflow"
 
-    # INST — STRONG filtered out
+    # INST — STRONG GOLD kept
     eff_150k = compute_dynamic_thresholds(150_000.0, p)
-    assert eff_150k.allowed_tiers == frozenset({"ELITE"})
+    assert "STRONG" in eff_150k.allowed_tiers, "INST must keep STRONG GOLD overflow"
 
 
 # ---------------- 7 — max_open_positions scaling per capital ----------------
 
 
 def test_max_open_positions_scales_per_capital_12tier():
-    """v0.7.8 P6 — 12-tier refactor 2026-05-06: max_open_positions per tier:
-    NANO=12, TINY=18, MICRO=22, SMALL=32, MEDIUM=50, LARGE=75, XL=110,
-    XXL=150, ELITE_OPEN=200, GIGA=300, HUGE=400, INST=500."""
+    """v0.7.8 P6 — 12-tier refactor 2026-05-09 (boosted caps): max_open_positions:
+    NANO=24, TINY=30, MICRO=40, SMALL=60, MEDIUM=90, LARGE=130, XL=180,
+    XXL=240, ELITE_OPEN=320, GIGA=480, HUGE=640, INST=800."""
     p = get_preset("BASE_PAPER")
     if p.max_open_positions is not None:
         assert p.max_open_positions != 15, "legacy max_open_positions=15"
-    # NANO (<$200): 12
-    assert compute_dynamic_thresholds(54.0, p).max_open_positions == 12
-    assert compute_dynamic_thresholds(180.0, p).max_open_positions == 12
-    # TINY ($200-249): 18
-    assert compute_dynamic_thresholds(220.0, p).max_open_positions == 18
-    # MICRO ($250-499): 22
-    assert compute_dynamic_thresholds(400.0, p).max_open_positions == 22
-    # SMALL ($500-999): 32
-    assert compute_dynamic_thresholds(700.0, p).max_open_positions == 32
-    # MEDIUM ($1k-1.99k): 50
-    assert compute_dynamic_thresholds(1500.0, p).max_open_positions == 50
-    # LARGE ($2k-3.99k): 75
-    assert compute_dynamic_thresholds(3000.0, p).max_open_positions == 75
-    # XL ($4k-7.99k): 110
-    assert compute_dynamic_thresholds(5000.0, p).max_open_positions == 110
-    # XXL ($8k-9.99k): 150
-    assert compute_dynamic_thresholds(9000.0, p).max_open_positions == 150
-    # ELITE_OPEN ($10k-31.99k): 200
-    assert compute_dynamic_thresholds(15_000.0, p).max_open_positions == 200
-    # GIGA ($32k-63.99k): 300
-    assert compute_dynamic_thresholds(40_000.0, p).max_open_positions == 300
-    # HUGE ($64k-127.99k): 400
-    assert compute_dynamic_thresholds(80_000.0, p).max_open_positions == 400
-    # INST (≥$128k): 500
-    assert compute_dynamic_thresholds(150_000.0, p).max_open_positions == 500
+    # NANO (<$200): 24
+    assert compute_dynamic_thresholds(54.0, p).max_open_positions == 24
+    assert compute_dynamic_thresholds(180.0, p).max_open_positions == 24
+    # TINY ($200-249): 30
+    assert compute_dynamic_thresholds(220.0, p).max_open_positions == 30
+    # MICRO ($250-499): 40
+    assert compute_dynamic_thresholds(400.0, p).max_open_positions == 40
+    # SMALL ($500-999): 60
+    assert compute_dynamic_thresholds(700.0, p).max_open_positions == 60
+    # MEDIUM ($1k-1.99k): 90
+    assert compute_dynamic_thresholds(1500.0, p).max_open_positions == 90
+    # LARGE ($2k-3.99k): 130
+    assert compute_dynamic_thresholds(3000.0, p).max_open_positions == 130
+    # XL ($4k-7.99k): 180
+    assert compute_dynamic_thresholds(5000.0, p).max_open_positions == 180
+    # XXL ($8k-9.99k): 240
+    assert compute_dynamic_thresholds(9000.0, p).max_open_positions == 240
+    # ELITE_OPEN ($10k-31.99k): 320
+    assert compute_dynamic_thresholds(15_000.0, p).max_open_positions == 320
+    # GIGA ($32k-63.99k): 480
+    assert compute_dynamic_thresholds(40_000.0, p).max_open_positions == 480
+    # HUGE ($64k-127.99k): 640
+    assert compute_dynamic_thresholds(80_000.0, p).max_open_positions == 640
+    # INST (≥$128k): 800
+    assert compute_dynamic_thresholds(150_000.0, p).max_open_positions == 800
 
 
 # ---------------- 8 — cap decreases as capital grows ----------------

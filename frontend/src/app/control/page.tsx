@@ -4,6 +4,7 @@ import { Pause, Play, RefreshCw, Square, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ControlButton } from "@/components/ControlButton";
 import { CapitalTierPanel } from "@/components/CapitalTierPanel";
+import StrictCutoverPanel from "@/components/StrictCutoverPanel";
 import {
   BotLoopStatus,
   BotStatus,
@@ -158,6 +159,10 @@ export default function ControlRoomPage() {
 
       <section className="mt-6">
         <CapitalTierPanel />
+      </section>
+
+      <section className="mt-6">
+        <StrictCutoverPanel />
       </section>
 
       <section className="mt-6 rounded border border-line bg-panel p-4">

@@ -12,9 +12,49 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlmodel import Session
+
+from app.database import get_session
 
 router = APIRouter(prefix="/observability", tags=["observability"])
+
+
+@router.get("/utilization")
+def utilization_status(
+    window_hours: float = 24.0,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """M5 throughput classifier (A-INSTR Phase A — 2026-05-11).
+
+    Returns max_pos_utilization avg/p95, slot_block_rate, capital_utilization,
+    fresh_signal_rate, and the 5-bound classification (slot/capital/opportunity/
+    latency/risk-gate) so the operator knows which Phase C lever to pull.
+    Default window 24h; pass ?window_hours=N to widen/narrow."""
+    from app.services.throughput_classifier import utilization_payload
+    return utilization_payload(session, window_hours=window_hours)
+
+
+@router.get("/polling-errors")
+def polling_errors_classified(window_hours: float = 6.0) -> dict[str, Any]:
+    """P0.4 polling error classifier (review Round 4 — 2026-05-11).
+
+    Classifies errors from backend.dev.err.log into noise / transient / critical
+    buckets. Surfaces signal_loss_estimated_pct + alerts for rate-limit /
+    critical thresholds. READ-ONLY (no runtime impact)."""
+    from app.services.polling_error_classifier import classify_payload
+    return classify_payload(window_hours=window_hours)
+
+
+@router.get("/baseline-info")
+def baseline_info() -> dict[str, Any]:
+    """P0.1 effective baseline T0 (post category_resolver fix — 2026-05-11).
+
+    Returns the EFFECTIVE_BASELINE_T0 (=2026-05-11T13:21:33Z) and diagnostic
+    period (01:54-13:21Z) info. Phase B metrics MUST be computed from this T0,
+    NOT from strict_cutover_at."""
+    from app.services.baseline_constants import baseline_info as _baseline_info
+    return _baseline_info()
 
 
 @router.get("/latency")

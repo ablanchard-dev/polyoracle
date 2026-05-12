@@ -88,16 +88,21 @@ def test_resolution_close_charges_entry_fee_only():
 
 def test_manual_close_charges_entry_and_exit_fees():
     """Manual / stale-TTL / signal-invalidated = mid-market exit. Both
-    legs paid Polymarket → both fees subtracted."""
+    legs paid Polymarket → both fees subtracted.
+    2026-05-07 — synth exit slippage shifts effective_exit < raw 0.55 for BUY,
+    so exit_fee is computed on effective_exit, not raw price."""
+    from app.services.paper_trading_engine import _apply_synth_exit_slippage
+
     eng = _engine()
     with Session(eng) as session:
         trade = _make_open_trade(session, category="Crypto", entry=0.40, qty=100.0)
         entry_fee = compute_dynamic_fee("Crypto", 0.40, 100.0)
-        exit_fee = compute_dynamic_fee("Crypto", 0.55, 100.0)
+        effective_exit, _ = _apply_synth_exit_slippage(0.55, "BUY")
+        exit_fee = compute_dynamic_fee("Crypto", effective_exit, 100.0)
         closed = _close_paper_with_reason(
             session, trade, reason=CLOSE_REASON_MANUAL, exit_price=0.55,
         )
-        gross = (0.55 - 0.40) * 100.0
+        gross = (effective_exit - 0.40) * 100.0
         assert closed.fees == round(entry_fee + exit_fee, 6)
         assert closed.realized_pnl == round(gross - entry_fee - exit_fee, 6)
 
@@ -168,8 +173,12 @@ def test_geopolitics_market_pays_zero_fee():
 def test_close_reason_metadata_includes_fee_breakdown():
     """The JSON appended to close_reason must surface entry_fee,
     exit_fee, gross_pnl so downstream reports can quantify the
-    real-world drag from B12."""
+    real-world drag from B12.
+    2026-05-07 — synth exit slippage shifts effective_exit (BUY: 0.55 → ~0.5315),
+    so exit_fee and gross_pnl are computed on effective_exit, not raw price."""
     import json
+    from app.services.paper_trading_engine import _apply_synth_exit_slippage
+
     eng = _engine()
     with Session(eng) as session:
         trade = _make_open_trade(session, category="Crypto", entry=0.40, qty=100.0)
@@ -182,9 +191,13 @@ def test_close_reason_metadata_includes_fee_breakdown():
         assert "entry_fee" in meta
         assert "exit_fee" in meta
         assert "gross_pnl" in meta
-        # entry fee at p=0.40, qty 100, rate 0.072 → 1.728
+        # entry fee at p=0.40, qty 100, rate 0.072 → 1.728 (entry not slipped)
         assert meta["entry_fee"] == pytest.approx(1.728, abs=1e-3)
-        # exit fee at p=0.55 → 100 × 0.072 × 0.55 × 0.45 = 1.782
-        assert meta["exit_fee"] == pytest.approx(1.782, abs=1e-3)
-        # gross PnL = (0.55 - 0.40) × 100 = 15
-        assert meta["gross_pnl"] == pytest.approx(15.0, abs=1e-3)
+        # exit fee uses effective_exit (post synth slippage)
+        effective_exit, _ = _apply_synth_exit_slippage(0.55, "BUY")
+        expected_exit_fee = compute_dynamic_fee("Crypto", effective_exit, 100.0)
+        assert meta["exit_fee"] == pytest.approx(expected_exit_fee, abs=1e-3)
+        # gross PnL = (effective_exit - 0.40) × 100 (post-slippage)
+        expected_gross = (effective_exit - 0.40) * 100.0
+        assert meta["gross_pnl"] == pytest.approx(expected_gross, abs=1e-3)
+        assert meta["exit_slippage"] > 0

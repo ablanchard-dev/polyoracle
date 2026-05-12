@@ -17,6 +17,8 @@ import {
   getScheduler,
   killSwitchFlatten,
 } from "@/lib/api";
+import CopyEfficiencyPanel from "@/components/CopyEfficiencyPanel";
+import UtilizationPanel from "@/components/UtilizationPanel";
 
 export default function ObservabilityPage() {
   const [latency, setLatency] = useState<LatencyStatus | null>(null);
@@ -87,6 +89,12 @@ export default function ObservabilityPage() {
           {killResult}
         </div>
       )}
+
+      {/* Phase A 2026-05-11 — M5 throughput + M1 copy efficiency */}
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <UtilizationPanel />
+        <CopyEfficiencyPanel />
+      </section>
 
       {/* Latency table */}
       <section>

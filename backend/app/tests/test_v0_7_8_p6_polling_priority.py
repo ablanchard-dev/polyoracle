@@ -124,9 +124,9 @@ def _seed_mfwr(session: Session, *, gold_active=3, mid_active=3, low_active=3,
     return rows
 
 
-def test_nano_capital_loads_only_elite_gold_p6(tmp_path):
-    """At NANO (<$200), cohort must include ELITE GOLD only (wr ≥ 0.99).
-    SILVER/BRONZE/STRONG/DROPPED all excluded.
+def test_nano_capital_loads_elite_gold_and_silver_p6(tmp_path):
+    """12-tier spec 2026-05-09: at NANO (<$200), cohort = ELITE GOLD + SILVER
+    (was GOLD only pre-2026-05-09). BRONZE/STRONG/DROPPED still excluded.
     """
     eng = _engine()
     with Session(eng) as session:
@@ -139,13 +139,16 @@ def test_nano_capital_loads_only_elite_gold_p6(tmp_path):
         )
 
         assert len(cohort) > 0
-        # Only GOLD addresses (gold_*) in cohort. mid (SILVER) / low (BRONZE) /
-        # inactive (BRONZE 0.945) / strong / dropped all excluded.
+        # GOLD + SILVER (mid_*) addresses allowed. BRONZE (low_*, inactive_*),
+        # STRONG and DROPPED still excluded.
         for addr in cohort:
-            assert "gold" in addr.lower(), (
-                f"NANO cohort should only contain ELITE GOLD, got {addr}"
+            addr_lower = addr.lower()
+            assert ("gold" in addr_lower or "mid" in addr_lower), (
+                f"NANO cohort should only contain ELITE GOLD or SILVER, got {addr}"
             )
-        assert len(cohort) == 3  # only 3 gold_active wallets
+            assert "strong" not in addr_lower, f"STRONG in NANO cohort: {addr}"
+            assert "low" not in addr_lower, f"BRONZE in NANO cohort: {addr}"
+            assert "inactive" not in addr_lower, f"Inactive BRONZE in NANO cohort: {addr}"
 
 
 def test_elite_open_polls_all_wr_buckets_in_priority_order_p6(tmp_path):
@@ -205,15 +208,25 @@ def test_inactive_elite_stays_in_cohort_at_compatible_tier_p6(tmp_path):
         )
 
 
-def test_strong_never_at_nano_tiny_micro_small_p6(tmp_path):
-    """STRONG never polled at NANO/TINY/MICRO/SMALL (<$1k). Overflow only ≥MEDIUM."""
+def test_strong_never_below_elite_open_p6(tmp_path):
+    """12-tier spec 2026-05-09: STRONG never polled below $10k (ELITE_OPEN pivot).
+    Includes NANO/TINY/MICRO/SMALL/MEDIUM/LARGE/XL/XXL — all ELITE-only."""
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
         addresses = [r.address for r in seeded]
         csv = _csv_path(tmp_path, addresses)
 
-        for cap_usd, tier_name in [(108.0, "NANO"), (220.0, "TINY"), (400.0, "MICRO"), (700.0, "SMALL")]:
+        for cap_usd, tier_name in [
+            (108.0, "NANO"),
+            (220.0, "TINY"),
+            (400.0, "MICRO"),
+            (700.0, "SMALL"),
+            (1500.0, "MEDIUM"),  # NEW spec: STRONG excluded
+            (3000.0, "LARGE"),
+            (5000.0, "XL"),
+            (9000.0, "XXL"),
+        ]:
             cohort = WalletPollingEngine.load_cohort(
                 path=csv, session=session, capital_total=cap_usd,
             )
@@ -223,8 +236,9 @@ def test_strong_never_at_nano_tiny_micro_small_p6(tmp_path):
             )
 
 
-def test_medium_capital_includes_strong_gold_only_p6(tmp_path):
-    """At MEDIUM (≥$1k): STRONG GOLD overflow allowed. STRONG SILVER/BRONZE never."""
+def test_elite_open_capital_includes_strong_gold_only_p6(tmp_path):
+    """12-tier spec 2026-05-09: at ELITE_OPEN (≥$10k pivot): STRONG GOLD overflow
+    allowed (was MEDIUM ≥$1k pre-2026-05-09). STRONG SILVER/BRONZE never."""
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -232,20 +246,18 @@ def test_medium_capital_includes_strong_gold_only_p6(tmp_path):
         csv = _csv_path(tmp_path, addresses)
 
         cohort = WalletPollingEngine.load_cohort(
-            path=csv, session=session, capital_total=1500.0,  # MEDIUM
+            path=csv, session=session, capital_total=15_000.0,  # ELITE_OPEN
         )
         strong_in_cohort = [a for a in cohort if "strong" in a]
         # Fixture seeded 2 STRONG GOLD (wr=0.995) → both should be present.
         assert len(strong_in_cohort) == 2, (
-            f"MEDIUM cohort should include STRONG GOLD overflow (2), got {strong_in_cohort}"
+            f"ELITE_OPEN cohort should include STRONG GOLD overflow (2), got {strong_in_cohort}"
         )
 
 
-def test_huge_capital_excludes_strong_p6(tmp_path):
-    """At HUGE (≥$64k): ELITE only (preservation). STRONG excluded.
-    Note: 12-tier refactor: STRONG GOLD overflow allowed up to GIGA ($63.99k);
-    HUGE/INST = preservation, no STRONG.
-    """
+def test_huge_capital_keeps_strong_gold_p6(tmp_path):
+    """12-tier spec 2026-05-09: at HUGE (≥$64k): KEEPS STRONG GOLD overflow
+    (was excluded 'preservation' pre-2026-05-09). HUGE/INST keep STRONG GOLD."""
     eng = _engine()
     with Session(eng) as session:
         seeded = _seed_mfwr(session)
@@ -256,8 +268,9 @@ def test_huge_capital_excludes_strong_p6(tmp_path):
             path=csv, session=session, capital_total=80_000.0,  # HUGE
         )
         strong_in_cohort = [a for a in cohort if "strong" in a]
-        assert strong_in_cohort == [], (
-            f"HUGE cohort should exclude STRONG (preservation), got {strong_in_cohort}"
+        # Fixture seeded 2 STRONG GOLD → kept at HUGE in new spec.
+        assert len(strong_in_cohort) == 2, (
+            f"HUGE cohort should keep STRONG GOLD overflow, got {strong_in_cohort}"
         )
 
 

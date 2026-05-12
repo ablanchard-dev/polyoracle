@@ -657,10 +657,15 @@ class CapitalAllocator:
         # ELITE. These MUST be enforced for live trading.
         from app.config import get_settings as _get_settings
         _s = _get_settings()
+        # 2026-05-11 (Phase A): when paper_live_strict=True, the bypass is
+        # disabled — paper applies the EXACT same gates as live (spread,
+        # liquidity, orderbook, copyable_edge, unknown-category). Toggle via
+        # PAPER_LIVE_STRICT in .env. Default false for safe rollout.
         _elite_paper_bypass = (
             signal.wallet_tier == "ELITE"
             and _s.paper_trading_enabled
             and not _s.live_enabled
+            and not _s.paper_live_strict
         )
         if signal.spread > params.max_spread_pct and not _elite_paper_bypass:
             return AllocatorDecision(

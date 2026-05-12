@@ -125,17 +125,21 @@ def test_realized_pnl_calculation_correct_sell_side(session: Session) -> None:
 
 
 def test_manual_close_via_close_position_by_id(session: Session) -> None:
+    from app.services.paper_trading_engine import _apply_synth_exit_slippage
+    from app.services.fee_engine import compute_dynamic_fee
+
     trade = _open_position(session)
     engine = PaperTradingEngine(session)
     closed = engine.close_position_by_id(trade.id, exit_price=0.55, reason="manual")
     assert closed is not None
     assert closed.status == "closed"
     assert closed.close_reason == "manual"
-    # v0.7.8 — manual close charges BOTH entry and exit fees (mid-market exit,
-    # not oracle-settled). Default rate 5%, qty 100, entry 0.40, exit 0.55.
-    expected_gross = (0.55 - 0.40) * 100.0
-    expected_entry_fee = 100.0 * 0.05 * 0.40 * 0.60
-    expected_exit_fee = 100.0 * 0.05 * 0.55 * 0.45
+    # v0.7.8 — manual close charges BOTH entry and exit fees (mid-market exit).
+    # 2026-05-07 — synth slippage applied: effective_exit < raw 0.55 for BUY.
+    effective_exit, _slip = _apply_synth_exit_slippage(0.55, "BUY")
+    expected_gross = (effective_exit - 0.40) * 100.0
+    expected_entry_fee = compute_dynamic_fee(None, 0.40, 100.0)  # default rate
+    expected_exit_fee = compute_dynamic_fee(None, effective_exit, 100.0)
     assert closed.realized_pnl == round(expected_gross - expected_entry_fee - expected_exit_fee, 2)
 
 

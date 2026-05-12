@@ -1,5 +1,15 @@
 # .env included on user request (private repo, no real secrets — only URLs + paper config)
 
+# Phase E2 (2026-05-11) — .env.live contains PRIVATE_KEY for live trading.
+# NEVER track. Lives ONLY on the VPS via systemd Environment= or chmod 600 file.
+.env.live
+backend/.env.live
+.env.production
+# CLOB L2 credentials cache (apiKey/secret/passphrase derived from PRIVATE_KEY)
+data/_polymarket_l2_creds.json
+# Smoke + private logs (could contain wallet info if debug enabled)
+backend/_smoke_strict_logs/
+
 # All .db files ignored EXCEPT the live runtime DB (tracked via Git LFS)
 *.db
 !data/polyoracle.db

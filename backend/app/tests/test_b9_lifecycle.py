@@ -140,12 +140,17 @@ def test_close_releases_capital_and_exposure():
     payload = _close_payload(closed)
     assert payload["reason"] == CLOSE_REASON_MANUAL
     assert payload["metadata"]["capital_released_usdc"] == 12.5
-    # v0.7.8 B12 — realized_pnl NET. Manual close subtracts both entry_fee
-    # and exit_fee (we placed an exit order, not oracle settlement).
-    gross = round((0.6 - 0.5) * 25.0, 6)  # 2.5
+    # v0.7.8 B12 — realized_pnl NET (entry_fee + exit_fee deducted).
+    # 2026-05-07 — manual close also applies synth exit slippage to effective_exit.
+    # gross_pnl in metadata reflects the post-slippage gross, not raw price diff.
+    raw_gross = round((0.6 - 0.5) * 25.0, 6)  # 2.5 raw (would be live no-slippage)
     assert closed.fees > 0
-    assert closed.realized_pnl == round(gross - closed.fees, 6)
-    assert payload["metadata"]["gross_pnl"] == gross
+    # Invariant: realized_pnl = effective_gross - total_fees (internal consistency)
+    effective_gross = payload["metadata"]["gross_pnl"]
+    assert closed.realized_pnl == round(effective_gross - closed.fees, 6)
+    # Synth slippage shrinks effective_gross below raw_gross
+    assert effective_gross <= raw_gross
+    assert payload["metadata"]["exit_slippage"] > 0  # synth applied
 
 
 # ============ 4. PnL history preserved ============

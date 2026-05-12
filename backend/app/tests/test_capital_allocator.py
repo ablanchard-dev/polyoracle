@@ -217,11 +217,13 @@ def test_reject_bad_orderbook_when_required():
 
 
 def test_elite_paper_bypass_skips_data_quality_gates(monkeypatch):
-    """B16/B17 positif: ELITE + paper + live OFF → bypass actif sur spread/liquidity/orderbook."""
+    """B16/B17 positif: ELITE + paper + live OFF → bypass actif sur spread/liquidity/orderbook.
+    2026-05-11: explicit paper_live_strict=False to override env (smoke active runs strict=true)."""
     from app.config import get_settings
     s = get_settings()
     monkeypatch.setattr(s, "paper_trading_enabled", True)
     monkeypatch.setattr(s, "live_enabled", False)
+    monkeypatch.setattr(s, "paper_live_strict", False)  # legacy bypass mode
 
     a = CapitalAllocator()
     # Signal qui fail TOUS les data-quality gates
@@ -254,6 +256,7 @@ def test_elite_live_re_enables_data_quality_gates(monkeypatch):
     s = get_settings()
     monkeypatch.setattr(s, "paper_trading_enabled", True)
     monkeypatch.setattr(s, "live_enabled", True)  # LIVE ON → bypass off
+    monkeypatch.setattr(s, "paper_live_strict", False)  # ensure isolated from env
 
     a = CapitalAllocator()
     bad_sig = _good_signal(wallet_tier="ELITE", liquidity=100)
@@ -261,6 +264,67 @@ def test_elite_live_re_enables_data_quality_gates(monkeypatch):
     d = a.evaluate_trade(bad_sig, _good_state(), p)
     assert d.reason_code == "LOW_LIQUIDITY", (
         f"En live, le bypass ELITE doit être OFF — gate liquidity doit reject, got {d.reason_code}"
+    )
+
+
+def test_paper_live_strict_disables_elite_bypass(monkeypatch):
+    """A3/A9 (2026-05-11): PAPER_LIVE_STRICT=true neutralise le _elite_paper_bypass.
+
+    Spec opérateur 2026-05-09: "on veut vraiment le paper identique au live".
+    Quand le flag strict est ON, paper applique EXACTEMENT les gates live
+    sur ELITE (spread, liquidity, orderbook). Si ce test fail, paper redevient
+    plus permissif que live et la cadence post-strict est artificielle.
+    """
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "paper_trading_enabled", True)
+    monkeypatch.setattr(s, "live_enabled", False)
+    monkeypatch.setattr(s, "paper_live_strict", True)  # ← strict on → bypass off
+
+    a = CapitalAllocator()
+    # Signal qui fail data-quality, mais wallet ELITE (= aurait passé sous bypass)
+    bad_spread_sig = _good_signal(wallet_tier="ELITE", spread=0.50)
+    p_spread = _liberal_params(max_spread_pct=0.02)
+    d_spread = a.evaluate_trade(bad_spread_sig, _good_state(), p_spread)
+    assert d_spread.reason_code == "WIDE_SPREAD", (
+        f"PAPER_LIVE_STRICT doit reject WIDE_SPREAD pour ELITE, got {d_spread.reason_code}"
+    )
+
+    bad_liq_sig = _good_signal(wallet_tier="ELITE", liquidity=10)
+    p_liq = _liberal_params(min_liquidity=5000)
+    d_liq = a.evaluate_trade(bad_liq_sig, _good_state(), p_liq)
+    assert d_liq.reason_code == "LOW_LIQUIDITY", (
+        f"PAPER_LIVE_STRICT doit reject LOW_LIQUIDITY pour ELITE, got {d_liq.reason_code}"
+    )
+
+    bad_ob_sig = _good_signal(wallet_tier="ELITE", orderbook_quality="UNTRADABLE")
+    p_ob = _liberal_params(require_orderbook_quality=True)
+    d_ob = a.evaluate_trade(bad_ob_sig, _good_state(), p_ob)
+    assert d_ob.reason_code == "BAD_ORDERBOOK", (
+        f"PAPER_LIVE_STRICT doit reject BAD_ORDERBOOK pour ELITE, got {d_ob.reason_code}"
+    )
+
+
+def test_paper_live_strict_off_keeps_elite_bypass_default(monkeypatch):
+    """A3/A9 (2026-05-11): par défaut PAPER_LIVE_STRICT=false, le bypass
+    historique reste actif (compatibilité ascendante). Garantit qu'on
+    peut rollback au comportement legacy via env flag sans code change."""
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "paper_trading_enabled", True)
+    monkeypatch.setattr(s, "live_enabled", False)
+    monkeypatch.setattr(s, "paper_live_strict", False)  # rollback to legacy
+
+    a = CapitalAllocator()
+    bad_sig = _good_signal(
+        wallet_tier="ELITE", spread=0.50, liquidity=10, orderbook_quality="UNTRADABLE",
+    )
+    p = _liberal_params(
+        max_spread_pct=0.02, min_liquidity=1000, require_orderbook_quality=True,
+    )
+    d = a.evaluate_trade(bad_sig, _good_state(), p)
+    assert d.reason_code not in ("WIDE_SPREAD", "LOW_LIQUIDITY", "BAD_ORDERBOOK"), (
+        f"strict=false → bypass legacy doit skip data-quality gates, got {d.reason_code}"
     )
 
 
@@ -467,13 +531,13 @@ def test_dynamic_thresholds_at_50_euros_smalltier_elite_only():
         risk_per_trade=0.01,
     )
     eff = compute_dynamic_thresholds(50.0, base)
-    assert eff.allowed_tiers == frozenset({"ELITE"})  # SMALL = ELITE only
-    assert eff.max_open_positions == 12  # SMALL cap
+    assert eff.allowed_tiers == frozenset({"ELITE"})  # NANO = ELITE only (12-tier 2026-05-09)
+    assert eff.max_open_positions == 24  # NANO cap (12-tier 2026-05-09: was 12)
 
 
 def test_dynamic_thresholds_at_500_usd_small_tier():
-    """v0.7.8 P6 12-tier refactor 2026-05-06: at $500 → SMALL tier
-    (ELITE GOLD+SILVER only, no STRONG). max_pos=32."""
+    """v0.7.8 P6 12-tier refactor 2026-05-09: at $500 → SMALL tier
+    (ELITE GOLD+SILVER only, no STRONG). max_pos=60."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG", "CANDIDATE_ELITE"}),
@@ -484,44 +548,30 @@ def test_dynamic_thresholds_at_500_usd_small_tier():
     eff = compute_dynamic_thresholds(500.0, base)
     # SMALL tier: STRONG NOT in allowed_tiers_intersect → intersected out
     assert eff.allowed_tiers == frozenset({"ELITE"})
-    assert eff.max_open_positions == 32  # SMALL cap
+    assert eff.max_open_positions == 60  # SMALL cap (12-tier 2026-05-09: was 32)
 
 
 def test_dynamic_thresholds_at_5000_usd_xl_tier():
-    """v0.7.8 P6 12-tier refactor 2026-05-06: at $5000 → XL tier
-    (ELITE GOLD+SILVER + STRONG GOLD overflow). max_pos=110."""
+    """v0.7.8 P6 12-tier refactor 2026-05-09: at $5000 → XL tier
+    (ELITE GOLD+SILVER only, NO STRONG yet — STRONG GOLD overflow starts at
+    ELITE_OPEN $10k+). max_pos=180."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG"}),
         min_ev_lb=0.02,
         min_copyable_edge=0.40,
-        max_open_positions=200,
+        max_open_positions=300,
     )
     eff = compute_dynamic_thresholds(5_000.0, base)
-    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
-    assert eff.max_open_positions == 110
+    # XL: STRONG NOT in allowed_tiers (12-tier 2026-05-09 — STRONG only at ELITE_OPEN+)
+    assert eff.allowed_tiers == frozenset({"ELITE"})
+    assert eff.max_open_positions == 180  # XL cap (was 110)
 
 
 def test_dynamic_thresholds_at_60000_usd_giga_tier():
-    """v0.7.8 P6 12-tier refactor 2026-05-06: at $60k → GIGA tier
-    (ELITE all + STRONG GOLD overflow). max_pos=300.
-    HUGE (≥$64k) is where STRONG gets filtered out (preservation)."""
-    base = _liberal_params(
-        capital_aware_thresholds=True,
-        allowed_tiers=frozenset({"ELITE", "STRONG"}),
-        min_ev_lb=0.02,
-        min_copyable_edge=0.40,
-        max_open_positions=400,
-    )
-    eff = compute_dynamic_thresholds(60_000.0, base)
-    # GIGA still allows STRONG GOLD overflow
-    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
-    assert eff.max_open_positions == 300
-
-
-def test_dynamic_thresholds_at_70000_usd_huge_tier_preservation():
-    """v0.7.8 P6 12-tier refactor 2026-05-06: at $70k → HUGE tier
-    (ELITE only, preservation). max_pos=400."""
+    """v0.7.8 P6 12-tier refactor 2026-05-09: at $60k → GIGA tier
+    (ELITE all + STRONG GOLD overflow). max_pos=480.
+    Spec 2026-05-09: HUGE/INST KEEP STRONG GOLD (no preservation cap)."""
     base = _liberal_params(
         capital_aware_thresholds=True,
         allowed_tiers=frozenset({"ELITE", "STRONG"}),
@@ -529,10 +579,27 @@ def test_dynamic_thresholds_at_70000_usd_huge_tier_preservation():
         min_copyable_edge=0.40,
         max_open_positions=600,
     )
+    eff = compute_dynamic_thresholds(60_000.0, base)
+    # GIGA allows STRONG GOLD overflow
+    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
+    assert eff.max_open_positions == 480  # GIGA cap (was 300)
+
+
+def test_dynamic_thresholds_at_70000_usd_huge_tier():
+    """v0.7.8 P6 12-tier refactor 2026-05-09: at $70k → HUGE tier
+    (ALL ELITE + STRONG GOLD overflow — NO preservation cap, spec 2026-05-09).
+    max_pos=640."""
+    base = _liberal_params(
+        capital_aware_thresholds=True,
+        allowed_tiers=frozenset({"ELITE", "STRONG"}),
+        min_ev_lb=0.02,
+        min_copyable_edge=0.40,
+        max_open_positions=800,
+    )
     eff = compute_dynamic_thresholds(70_000.0, base)
-    # HUGE: STRONG filtered out (preservation)
-    assert eff.allowed_tiers == frozenset({"ELITE"})
-    assert eff.max_open_positions == 400
+    # HUGE keeps STRONG GOLD overflow (no preservation in 12-tier 2026-05-09)
+    assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
+    assert eff.max_open_positions == 640  # HUGE cap (was 400)
 
 
 def test_capital_aware_overrides_base_params_when_tighter():
@@ -594,10 +661,10 @@ def test_capital_aware_strong_rejected_at_small_capital_v0_7_8_p6():
     )
 
 
-def test_capital_aware_strong_passes_at_medium_through_giga_v0_7_8_p6():
-    """v0.7.8 P6 12-tier refactor 2026-05-06 — STRONG GOLD overflow allowed
-    at MEDIUM ($1k+), LARGE, XL, XXL, ELITE_OPEN, GIGA. Rejected at HUGE
-    (≥$64k, preservation) and INST."""
+def test_capital_aware_strong_passes_at_elite_open_through_inst_v0_7_8_p6():
+    """v0.7.8 P6 12-tier refactor 2026-05-09 — STRONG GOLD overflow allowed
+    ONLY from ELITE_OPEN ($10k+) up to INST. Rejected at NANO/TINY/MICRO/SMALL/
+    MEDIUM/LARGE/XL/XXL (all <$10k tiers are ELITE-only, no STRONG)."""
     a = CapitalAllocator()
     base = _liberal_params(
         capital_aware_thresholds=True,
@@ -605,24 +672,24 @@ def test_capital_aware_strong_passes_at_medium_through_giga_v0_7_8_p6():
         min_ev_lb=0.02,
     )
     sig = _good_signal(wallet_tier="STRONG", ev_lower_bound=0.20)
-    # MEDIUM ($1k) — STRONG passes (overflow GOLD allowed)
+    # MEDIUM ($1k) — STRONG REJECTED (ELITE-only tier in 12-tier spec 2026-05-09)
     d_medium = a.evaluate_trade(sig, _good_state(capital_total=1500, capital_available=1500), base)
-    assert d_medium.reason_code != "WALLET_TIER", f"STRONG must pass at MEDIUM ; got {d_medium.reason_code}"
-    # XL ($5k) — STRONG passes
+    assert d_medium.reason_code == "WALLET_TIER", f"STRONG must be filtered at MEDIUM ; got {d_medium.reason_code}"
+    # XL ($5k) — STRONG REJECTED
     d_xl = a.evaluate_trade(sig, _good_state(capital_total=5_000, capital_available=5_000), base)
-    assert d_xl.reason_code != "WALLET_TIER", f"STRONG must pass at XL ; got {d_xl.reason_code}"
-    # ELITE_OPEN ($15k) — STRONG passes
+    assert d_xl.reason_code == "WALLET_TIER", f"STRONG must be filtered at XL ; got {d_xl.reason_code}"
+    # ELITE_OPEN ($15k) — STRONG passes (STRONG GOLD overflow starts here)
     d_eo = a.evaluate_trade(sig, _good_state(capital_total=15_000, capital_available=15_000), base)
     assert d_eo.reason_code != "WALLET_TIER", f"STRONG must pass at ELITE_OPEN ; got {d_eo.reason_code}"
     # GIGA ($40k) — STRONG passes
     d_giga = a.evaluate_trade(sig, _good_state(capital_total=40_000, capital_available=40_000), base)
     assert d_giga.reason_code != "WALLET_TIER", f"STRONG must pass at GIGA ; got {d_giga.reason_code}"
-    # HUGE ($80k) — STRONG rejected (preservation)
-    d_huge = a.evaluate_trade(sig, _good_state(capital_total=80_000, capital_available=80_000), base)
-    assert d_huge.reason_code == "WALLET_TIER", f"STRONG must be rejected at HUGE ; got {d_huge.reason_code}"
-    # INST ($150k) — STRONG rejected
+    # HUGE ($70k) — STRONG passes (no preservation cap in 2026-05-09 spec)
+    d_huge = a.evaluate_trade(sig, _good_state(capital_total=70_000, capital_available=70_000), base)
+    assert d_huge.reason_code != "WALLET_TIER", f"STRONG must pass at HUGE ; got {d_huge.reason_code}"
+    # INST ($150k) — STRONG passes
     d_inst = a.evaluate_trade(sig, _good_state(capital_total=150_000, capital_available=150_000), base)
-    assert d_inst.reason_code == "WALLET_TIER", f"STRONG must be rejected at INST ; got {d_inst.reason_code}"
+    assert d_inst.reason_code != "WALLET_TIER", f"STRONG must pass at INST ; got {d_inst.reason_code}"
 
 
 def test_capital_aware_evaluate_at_low_capital_allows_top_elite():
