@@ -52,7 +52,10 @@ ProtectHome=read-only
 ReadWritePaths=/opt/app/polyoracle/data /opt/app/polyoracle/backend/_smoke_strict_logs /opt/app/polyoracle/backend/_backups_v0_7_8_smoke_pre
 
 # No suspend mid-trade — interactive sleep handled by D2 watchdog instead
-WatchdogSec=120s
+# 600s (was 120s) — boot avec DB 1.4G + 466 wallets peut prendre >2min.
+# Postmortem 2026-05-13 : 120s a causé restart-loop systemd → 132×reclass×1.4G
+# = 180 GB disk = crash VPS. Fix : 10min de grâce avant kill.
+WatchdogSec=600s
 
 [Install]
 WantedBy=multi-user.target

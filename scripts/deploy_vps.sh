@@ -3,10 +3,13 @@
 # Usage: à exécuter SUR le VPS après SSH-ing in en tant que root ou sudo user
 #
 # Pré-requis local (sur ton PC Lyon) avant ce script:
-#   1. ssh-copy-id alex@<IP_VPS> (= ta clé SSH publique installée sur le VPS)
-#   2. Stop bot local: kill -TERM $(pgrep -f dev_server.py)
-#   3. Snapshot local DB: cp data/polyoracle.db data/_backup_pre_migration_$(date +%s).db
-#   4. Transfer DB vers VPS: scp data/polyoracle.db alex@<IP_VPS>:~/polyoracle/data/polyoracle.db
+#   1. ssh-copy-id root@<IP_VPS> (= ta clé SSH publique installée sur le VPS)
+#   2. Sur le VPS : générer une SSH key ed25519 et l'ajouter comme deploy key
+#      (read+write) sur le repo GitHub privé ablanchard-dev/polyoracle.
+#      Repo est PRIVÉ donc HTTPS clone échoue — SSH obligatoire.
+#   3. Stop bot local: kill -TERM $(pgrep -f dev_server.py)
+#   4. Snapshot local DB: cp data/polyoracle.db data/_backup_pre_migration_$(date +%s).db
+#   5. Transfer DB vers VPS: scp data/polyoracle.db root@<IP_VPS>:/opt/app/polyoracle/data/polyoracle.db
 #
 # Ce script ne lance PAS le bot — il prépare l'environnement.
 # Le start du bot est manuel après vérification.
@@ -56,11 +59,25 @@ fi
 # 5. Repo + venv
 echo ""
 echo ">>> [5/8] Clone repo + venv"
+# Repo polyoracle est PRIVÉ. HTTPS = échec. SSH obligatoire.
+# Pré-requis : deploy key (ed25519, read+write) générée sur le VPS et installée
+# dans GitHub > Settings > Deploy keys du repo.
+#
+# Pour générer la clé sur le VPS (si pas déjà fait, root) :
+#   sudo -u ${POLYORACLE_USER} ssh-keygen -t ed25519 -N '' -f /home/${POLYORACLE_USER}/.ssh/id_ed25519
+#   cat /home/${POLYORACLE_USER}/.ssh/id_ed25519.pub
+#   # → copier la clé publique dans GitHub > repo > Settings > Deploy keys (write enabled)
+#
+# Puis tester :
+#   sudo -u ${POLYORACLE_USER} ssh -T git@github.com
 sudo -u "$POLYORACLE_USER" bash << EOF
 set -e
 cd /home/${POLYORACLE_USER}
 if [ ! -d polyoracle ]; then
-    git clone https://github.com/ablanchard-dev/polyoracle.git
+    # SSH clone obligatoire (repo privé). Si la deploy key n'est pas installée,
+    # ce step échoue avec "Permission denied (publickey)" — installer la deploy
+    # key avant de re-run.
+    git clone git@github.com:ablanchard-dev/polyoracle.git
 fi
 cd polyoracle/backend
 if [ ! -d .venv ]; then
@@ -93,8 +110,15 @@ StandardOutput=append:${POLYORACLE_HOME}/backend/backend.dev.log
 StandardError=append:${POLYORACLE_HOME}/backend/backend.dev.err.log
 
 # RSS guard (D5)
-MemoryMax=2G
-MemoryHigh=1500M
+MemoryMax=3G
+MemoryHigh=2G
+
+# Watchdog 600s (postmortem 2026-05-13) — boot avec DB 1.4G + 466 wallets
+# peut prendre >2min. 120s causait kill prématuré → restart-loop → 132×reclass
+# = 180 GB disk = crash VPS. 10min de grâce.
+WatchdogSec=600s
+TimeoutStartSec=600s
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target
@@ -110,14 +134,41 @@ chown "$POLYORACLE_USER:$POLYORACLE_USER" "${POLYORACLE_HOME}/data/_hourly_backu
 
 cat > /etc/cron.hourly/polyoracle-backup << CRON
 #!/bin/bash
-# Hourly SQLite snapshot with 24-snapshot retention
+# Hourly SQLite snapshot avec disk pressure guard + retention 24 max.
+# Postmortem 2026-05-13 : sans disk guard + retention agressive, un restart
+# loop systemd + auto-reclass loop ont produit 132×1.4G = 180 GB et crashé
+# le VPS. Garde-fous obligatoires.
 BACKUP_DIR="${POLYORACLE_HOME}/data/_hourly_backups"
 DB="${POLYORACLE_HOME}/data/polyoracle.db"
+
+# Disk pressure guard : skip si <5G free sur le mount du backup dir
+FREE_G=\$(df -BG "\$BACKUP_DIR" | awk 'NR==2 {gsub("G","",\$4); print \$4}')
+if [ "\$FREE_G" -lt 5 ]; then
+    logger -t polyoracle-backup "skip: <5G free (\$FREE_G G)"
+    exit 0
+fi
+
+# Snapshot
 sudo -u "${POLYORACLE_USER}" sqlite3 "\$DB" ".backup '\$BACKUP_DIR/polyoracle_\$(date +%Y%m%dT%H00Z).db'"
-# Retention: keep last 24 hourly + 7 daily
-sudo -u "${POLYORACLE_USER}" find "\$BACKUP_DIR" -name 'polyoracle_*.db' -mtime +7 -delete
+
+# Retention 24 max : keep newest 24 fichiers, delete le reste
+sudo -u "${POLYORACLE_USER}" bash -c "ls -1t '\$BACKUP_DIR'/polyoracle_*.db 2>/dev/null | tail -n +25 | xargs -r rm -f"
 CRON
 chmod +x /etc/cron.hourly/polyoracle-backup
+
+# 7b. Reclass backup retention (daily cleanup, 7 keep max)
+echo ""
+echo ">>> [7b/8] Reclass backup retention"
+mkdir -p "${POLYORACLE_HOME}/data/_reclass_backups"
+chown "$POLYORACLE_USER:$POLYORACLE_USER" "${POLYORACLE_HOME}/data/_reclass_backups"
+
+cat > /etc/cron.daily/polyoracle-reclass-cleanup << CRON
+#!/bin/bash
+# Reclass backups : keep 7 newest only (postmortem 2026-05-13).
+BACKUP_DIR="${POLYORACLE_HOME}/data/_reclass_backups"
+sudo -u "${POLYORACLE_USER}" bash -c "ls -1t '\$BACKUP_DIR'/polyoracle_*.db 2>/dev/null | tail -n +8 | xargs -r rm -f"
+CRON
+chmod +x /etc/cron.daily/polyoracle-reclass-cleanup
 
 # 8. Final checks
 echo ""
