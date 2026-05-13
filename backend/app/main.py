@@ -71,29 +71,68 @@ async def on_startup() -> None:
         _backup_dir = Path("/opt/app/polyoracle/data/_reclass_backups")
         _backup_dir.mkdir(parents=True, exist_ok=True)
 
+        # HOTFIX 2026-05-13 14:00 UTC — disk leak postmortem:
+        # Pre-fix this loop ran 1×/24h, but if systemd restarted the service
+        # (watchdog timeout etc), each restart re-fired the loop = a new reclass
+        # = a new 1.4G backup. With 132 restarts, this consumed 180 GB of disk
+        # and crashed the VPS. Fix: a "last-run" stamp file under data/ that
+        # the loop checks before reclassing. Skip if last run < 23h ago.
+        _last_run_file = _db_path.parent / "_reclass_last_run.txt"
+
+        def _hours_since_last_reclass() -> float:
+            try:
+                if not _last_run_file.exists():
+                    return 999.0
+                ts_str = _last_run_file.read_text().strip()
+                last = datetime.fromisoformat(ts_str)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                delta = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+                return delta
+            except Exception:
+                return 999.0
+
+        def _stamp_last_reclass() -> None:
+            try:
+                _last_run_file.write_text(datetime.now(timezone.utc).isoformat())
+            except Exception:
+                pass
+
+        from datetime import datetime, timezone
+
         async def _daily_reclass_loop():
             await asyncio.sleep(60)  # boot grace period
             while True:
                 try:
-                    with Session(engine) as session:
-                        result = run_weekly_reclass(
-                            session,
-                            db_path=_db_path,
-                            backup_dir=_backup_dir,
-                            dry_run=False,
-                        )
-                    promoted = len(getattr(result, "promoted", []) or [])
-                    demoted = len(getattr(result, "demoted", []) or [])
-                    if promoted or demoted:
+                    # Skip reclass if one ran < 23h ago (= surviving a service
+                    # restart should NOT re-trigger reclass + backup)
+                    hours_ago = _hours_since_last_reclass()
+                    if hours_ago < 23.0:
                         logging.getLogger(__name__).info(
-                            "auto-reclass daily: +%d ELITE, -%d demoted",
-                            promoted, demoted,
+                            "auto-reclass skipped: last run %.1fh ago (need ≥23h)",
+                            hours_ago,
                         )
-                        try:
-                            engine_instance = WalletPollingEngine.instance()
-                            engine_instance._cohort = []
-                        except Exception:
-                            pass
+                    else:
+                        with Session(engine) as session:
+                            result = run_weekly_reclass(
+                                session,
+                                db_path=_db_path,
+                                backup_dir=_backup_dir,
+                                dry_run=False,
+                            )
+                        _stamp_last_reclass()
+                        promoted = len(getattr(result, "promoted", []) or [])
+                        demoted = len(getattr(result, "demoted", []) or [])
+                        if promoted or demoted:
+                            logging.getLogger(__name__).info(
+                                "auto-reclass daily: +%d ELITE, -%d demoted",
+                                promoted, demoted,
+                            )
+                            try:
+                                engine_instance = WalletPollingEngine.instance()
+                                engine_instance._cohort = []
+                            except Exception:
+                                pass
                 except Exception as exc:
                     logging.getLogger(__name__).warning(
                         "auto-reclass daily failed: %s: %s",
