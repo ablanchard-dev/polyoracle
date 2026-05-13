@@ -113,10 +113,10 @@ StandardError=append:${POLYORACLE_HOME}/backend/backend.dev.err.log
 MemoryMax=3G
 MemoryHigh=2G
 
-# Watchdog 600s (postmortem 2026-05-13) — boot avec DB 1.4G + 466 wallets
-# peut prendre >2min. 120s causait kill prématuré → restart-loop → 132×reclass
-# = 180 GB disk = crash VPS. 10min de grâce.
-WatchdogSec=600s
+# WatchdogSec DISABLED — le bot n'implémente pas sd_notify(WATCHDOG=1).
+# Activer Watchdog sans sd_notify = systemd kill périodique malgré bot sain.
+# Restart=always suffit (déclenche sur vrai crash / exit non-zero).
+# WatchdogSec=600s
 TimeoutStartSec=600s
 TimeoutStopSec=30s
 

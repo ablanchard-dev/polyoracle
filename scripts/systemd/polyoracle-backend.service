@@ -51,11 +51,15 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/opt/app/polyoracle/data /opt/app/polyoracle/backend/_smoke_strict_logs /opt/app/polyoracle/backend/_backups_v0_7_8_smoke_pre
 
-# No suspend mid-trade — interactive sleep handled by D2 watchdog instead
-# 600s (was 120s) — boot avec DB 1.4G + 466 wallets peut prendre >2min.
-# Postmortem 2026-05-13 : 120s a causé restart-loop systemd → 132×reclass×1.4G
-# = 180 GB disk = crash VPS. Fix : 10min de grâce avant kill.
-WatchdogSec=600s
+# WatchdogSec DISABLED 2026-05-13 — le bot n'implémente pas sd_notify(WATCHDOG=1).
+# Activer WatchdogSec sans sd_notify = systemd attend un ping qui n'arrive jamais
+# = kill périodique du bot peu importe son état réel.
+# Postmortem session : avec WatchdogSec=600s, 4 restarts en 40min observés malgré
+# bot 100% sain (RSS 123 MB, polling actif, trades OK).
+# Restart=always ci-dessus suffit (déclenche sur exit non-zero / vrai crash).
+# Pour ré-activer un jour : implémenter sd_notify dans dev_server.py via
+# python-systemd ou systemd-python sdnotify.notify("WATCHDOG=1") périodique.
+# WatchdogSec=600s
 
 [Install]
 WantedBy=multi-user.target
