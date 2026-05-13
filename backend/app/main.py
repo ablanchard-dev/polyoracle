@@ -50,10 +50,50 @@ async def on_startup() -> None:
         pass
     except Exception:
         pass
-    # 2026-05-09 — auto-reclass cron retiré: tournerait à vide tant que B22
-    # (audit_at MFWR figé depuis 28-29 avril, voir spec.md) n'est pas résolu.
-    # À ré-activer une fois le mécanisme W+L incremental update implémenté
-    # (réutilisation des trades polling sans nouveaux API calls).
+
+    # Phase G (Round 8, 2026-05-13) — auto-reclass quotidien REACTIVÉ.
+    # B22 incremental is now wired into _close_paper_with_reason (refresh MFWR
+    # on each RESOLVED close). The daily reclass thus has fresh W+L data to
+    # work with — promotions/demotions emerge naturally as the cohort evolves.
+    # Previous concern (2026-05-09 "cron tournerait à vide") is resolved.
+    try:
+        import asyncio
+        import logging
+        from datetime import datetime, timezone
+        from app.services.weekly_reclass_service import run_weekly_reclass
+        from app.database import engine
+        from sqlmodel import Session
+
+        async def _daily_reclass_loop():
+            await asyncio.sleep(60)  # boot grace period
+            while True:
+                try:
+                    with Session(engine) as session:
+                        result = run_weekly_reclass(session, dry_run=False)
+                    promoted = len(result.get("promoted", []))
+                    demoted = len(result.get("demoted", []))
+                    if promoted or demoted:
+                        logging.getLogger(__name__).info(
+                            "auto-reclass daily: +%d ELITE, -%d demoted",
+                            promoted, demoted,
+                        )
+                        # Force cohort reload at next polling cycle
+                        try:
+                            engine_instance = WalletPollingEngine.instance()
+                            engine_instance._cohort = []
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "auto-reclass daily failed: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+                # Sleep 24h before next run
+                await asyncio.sleep(86400)
+
+        asyncio.create_task(_daily_reclass_loop())
+    except Exception:
+        pass  # never crash startup on auto-reclass
 
 
 app.include_router(health.router)

@@ -310,6 +310,94 @@ def _apply_synth_exit_slippage(exit_price: float, trade_side: str) -> tuple[floa
     return eff, slip
 
 
+def _b22_runtime_update_mfwr_on_resolved_close(
+    session: Session, trade: PaperTrade,
+) -> None:
+    """Phase G (Round 8, 2026-05-13) — wire B22 incremental into close-loop runtime.
+
+    Each time a paper trade closes on RESOLVED (market settlement), refresh the
+    source wallet's MFWR W+L counters using the same dedup-by-audit_at logic as
+    the standalone B22 batch script. Pure DB read+write, no API call.
+
+    Defence-in-depth: wrapped in try/except. The trade is already committed by
+    the caller; failure to update MFWR must NEVER crash the close or affect
+    bot state. Worst case: stale MFWR for one wallet (will be caught by the
+    next batch B22 run or daily reclass).
+
+    Dedup: only counts markets whose end_date > MFWR.audit_at. After successful
+    increment, bumps audit_at to max(current, end_date).
+    """
+    try:
+        wallet = trade.wallet_address
+        market_id = trade.market_id
+        if not wallet or not market_id:
+            return
+        from app.models.wallet import MarketFirstWalletRecord, ResolvedMarketRecord
+
+        # 1. Lookup RMR (with condition_id fallback — same P0.1 pattern)
+        rmr = session.get(ResolvedMarketRecord, market_id)
+        if rmr is None or rmr.winning_outcome_index is None:
+            rmr = session.exec(
+                select(ResolvedMarketRecord).where(
+                    ResolvedMarketRecord.condition_id == market_id
+                )
+            ).first()
+        if rmr is None or not rmr.closed or rmr.winning_outcome_name is None:
+            return  # market not resolved in our DB — skip
+
+        # 2. Lookup MFWR for this wallet
+        mfwr = session.exec(
+            select(MarketFirstWalletRecord).where(
+                MarketFirstWalletRecord.address == wallet.lower()
+            )
+        ).first()
+        if mfwr is None:
+            return  # wallet not in our cohort tracking
+
+        # 3. Parse RMR end_date + dedup by audit_at
+        rmr_end_str = rmr.end_date
+        if not rmr_end_str:
+            return
+        try:
+            if "T" in rmr_end_str:
+                rmr_end = datetime.fromisoformat(rmr_end_str.replace("Z", "+00:00"))
+            else:
+                rmr_end = datetime.fromisoformat(rmr_end_str + "+00:00")
+        except Exception:
+            return
+        if rmr_end.tzinfo is None:
+            rmr_end = rmr_end.replace(tzinfo=UTC)
+        mfwr_audit = mfwr.audit_at
+        if mfwr_audit is not None:
+            if mfwr_audit.tzinfo is None:
+                mfwr_audit = mfwr_audit.replace(tzinfo=UTC)
+            if rmr_end <= mfwr_audit:
+                return  # already counted in MFWR
+        # 4. Determine win vs loss based on trade.outcome vs RMR.winning_outcome_name
+        bot_outcome = (trade.outcome or "").strip().lower()
+        winner = (rmr.winning_outcome_name or "").strip().lower()
+        if not bot_outcome or not winner:
+            return
+        if bot_outcome == winner:
+            mfwr.resolved_winning_markets = (mfwr.resolved_winning_markets or 0) + 1
+        else:
+            mfwr.resolved_losing_markets = (mfwr.resolved_losing_markets or 0) + 1
+        # 5. Recompute wr and bump audit_at
+        new_w = mfwr.resolved_winning_markets or 0
+        new_l = mfwr.resolved_losing_markets or 0
+        if new_w + new_l > 0:
+            mfwr.resolved_market_win_rate = new_w / (new_w + new_l)
+        mfwr.audit_at = datetime.now(UTC)
+        session.add(mfwr)
+        session.commit()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "B22 runtime MFWR update failed for trade %s: %s: %s",
+            trade.id, type(exc).__name__, exc,
+        )
+
+
 def _close_paper_with_reason(
     session: Session,
     trade: PaperTrade,
@@ -329,6 +417,10 @@ def _close_paper_with_reason(
     The ``trade.fees`` column is set to total fees applied. Pre-v0.7.8
     paper trades had ``realized_pnl = (exit-entry) × qty`` GROSS — paper
     PnL was 4-7% optimistic on Crypto trades. This fix closes that gap.
+
+    Phase G (Round 8, 2026-05-13): on CLOSED_RESOLVED, additionally refresh
+    the source wallet's MFWR W+L counters via _b22_runtime_update_mfwr_on_resolved_close().
+    Defence-wrapped — never blocks the close.
     """
     if reason not in CLOSE_REASONS:
         raise ValueError(f"unknown close reason {reason!r}; allowed={CLOSE_REASONS}")
@@ -398,6 +490,14 @@ def _close_paper_with_reason(
 
     session.commit()
     session.refresh(trade)
+
+    # Phase G (Round 8, 2026-05-13) — wire B22 incremental on RESOLVED close.
+    # Refresh the source wallet's MFWR W+L counters (incremental, dedup by
+    # audit_at). Defence-wrapped — failure to update never crashes the close
+    # or affects the trade state (already committed above).
+    if reason == CLOSE_REASON_RESOLVED:
+        _b22_runtime_update_mfwr_on_resolved_close(session, trade)
+
     return trade
 
 
