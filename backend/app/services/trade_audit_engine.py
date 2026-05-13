@@ -337,6 +337,12 @@ class TradeAuditEngine:
             market_liquidity_score=market_liquidity_score,
         )
 
+        # If _decide() lifted the orderbook filter in paper mode, mark the
+        # decision so paper-vs-live gap (M1 v5) can be measured: this trade
+        # would have been LIVE_REJECT under strict orderbook gating.
+        if decision == "PAPER_TRADE" and orderbook_summary.quality in ("UNTRADABLE", "BAD"):
+            warnings.append("live_shadow_paper_bypass_orderbook")
+
         result = TradeAuditResult(
             trade_id=normalized["trade_id"],
             timestamp=traded_at,
@@ -485,6 +491,28 @@ class TradeAuditEngine:
         if edge.classification in ("NO_EDGE", "NEGATIVE_EDGE"):
             return "WATCH" if wallet_tier in ("ELITE", "STRONG") else "IGNORE"
         if quality in ("UNTRADABLE", "BAD"):
+            # 2026-05-14 — drill NOT_PAPER 88% finding (Round 9 review):
+            # ELITE strong-edge trades on crypto 5min markets get orderbook
+            # BAD/UNTRADABLE due to CLOB 404, blocking them here before the
+            # capital_allocator/risk_engine `_elite_paper_bypass` can fire.
+            # Lift the orderbook filter ONLY when paper-mode AND every strict
+            # quality threshold is already met (no seuil baissé : tier strict,
+            # STRONG_EDGE, tq>=70, liquidity_score>0). In live mode (or strict
+            # paper) we still return WATCH. The caller appends warning
+            # 'live_shadow_paper_bypass_orderbook' for M1 v5 paper-vs-live
+            # gap measurement.
+            paper_mode = bool(
+                self.settings.paper_trading_enabled
+                and not self.settings.live_enabled
+            )
+            if (
+                paper_mode
+                and wallet_tier in ("ELITE", "STRONG")
+                and edge.classification == "STRONG_EDGE"
+                and trade_quality_score >= 70
+                and market_liquidity_score > 0
+            ):
+                return "PAPER_TRADE"
             return "WATCH"
         if spread_pct is not None and spread_pct > self.settings.max_spread_pct:
             return "WATCH"
