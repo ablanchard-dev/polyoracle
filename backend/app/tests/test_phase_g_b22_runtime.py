@@ -115,11 +115,15 @@ def test_b22_runtime_increments_loss_when_outcome_mismatch(session):
     assert mfwr.resolved_losing_markets == 6
 
 
-def test_b22_runtime_dedup_via_audit_at(session):
-    """Market resolved BEFORE MFWR.audit_at must NOT be counted."""
+def test_b22_runtime_no_longer_dedup_via_audit_at(session):
+    """OBSOLETE → updated: with ledger in place, dedup is via ledger
+    uniqueness, NOT audit_at. A market resolved before audit_at is now
+    counted (first occurrence) — ledger ensures it won't be re-counted."""
     audit_at = datetime.now(UTC)
     _make_mfwr(session, "0xskip", wins=100, losses=5, audit_at=audit_at)
-    # Market resolved BEFORE audit_at
+    # Market resolved BEFORE audit_at — under old dedup-by-audit_at logic,
+    # this would have been skipped. Under new ledger logic, the FIRST call
+    # counts it (no prior ledger row). Idempotence kicks in on SECOND call.
     _make_rmr(session, "0xold", winning="Yes",
               end_date=audit_at - timedelta(days=1))
     trade = _make_trade(session, "0xskip", "0xold", "Yes")
@@ -127,8 +131,8 @@ def test_b22_runtime_dedup_via_audit_at(session):
     mfwr = session.exec(
         select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xskip")
     ).one()
-    # No change
-    assert mfwr.resolved_winning_markets == 100
+    # New logic: counted on first call (ledger row inserted)
+    assert mfwr.resolved_winning_markets == 101
     assert mfwr.resolved_losing_markets == 5
 
 
@@ -293,14 +297,14 @@ def test_HOTFIX_runtime_must_not_invisibilize_uncounted_markets(session):
     )
 
 
-def test_HOTFIX_runtime_hook_disabled_by_default(session):
-    """Le hook runtime DOIT être disabled par défaut tant que le ledger
-    n'est pas en place (settings.enable_b22_runtime_hook = False)."""
+def test_LEDGER_hook_enabled_by_default(session):
+    """With WalletMarketResolutionAudit ledger in place, the runtime hook is
+    safe and can be enabled by default."""
     from app.config import get_settings
     s = get_settings()
-    assert getattr(s, "enable_b22_runtime_hook", True) is False, (
-        "enable_b22_runtime_hook doit être False par défaut. La logique audit_at "
-        "actuelle est unsound (cf. review audit 2026-05-13)."
+    assert getattr(s, "enable_b22_runtime_hook", False) is True, (
+        "After ledger implementation 2026-05-13, the hook should be enabled "
+        "by default (ledger guarantees idempotence)."
     )
 
 
@@ -308,11 +312,10 @@ def test_HOTFIX_close_resolved_skips_b22_when_flag_off(session, monkeypatch):
     """Quand enable_b22_runtime_hook=False, le close RESOLVED ne touche
     PAS MFWR. Le batch B22 reste source of truth."""
     from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", False)
     _make_mfwr(session, "0xskip", wins=50, losses=2, audit_at=datetime.now(UTC) - timedelta(days=10))
     _make_rmr(session, "0xskipmkt", winning="Yes")
     trade = _make_trade(session, "0xskip", "0xskipmkt", "Yes")
-
-    # Default config has enable_b22_runtime_hook = False
     _close_paper_with_reason(session, trade, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
     mfwr = session.exec(
         select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xskip")
@@ -320,4 +323,139 @@ def test_HOTFIX_close_resolved_skips_b22_when_flag_off(session, monkeypatch):
     # MFWR doit être inchangé (hook désactivé)
     assert mfwr.resolved_winning_markets == 50, (
         "Le hook ne doit pas modifier MFWR quand enable_b22_runtime_hook=False"
+    )
+
+
+# ============================================================
+# Phase G LEDGER tests (P0 implementation 2026-05-13)
+# WalletMarketResolutionAudit unique(wallet, market, outcome).
+# ============================================================
+
+
+def test_LEDGER_runtime_writes_ledger_row(session, monkeypatch):
+    """When B22 hook runs, a WalletMarketResolutionAudit row must be inserted."""
+    from app.config import get_settings
+    from app.models.trade import WalletMarketResolutionAudit
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", True)
+
+    _make_mfwr(session, "0xledger", wins=50, losses=2)
+    _make_rmr(session, "0xledgermkt", winning="Yes")
+    trade = _make_trade(session, "0xledger", "0xledgermkt", "Yes")
+    _close_paper_with_reason(session, trade, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+
+    rows = session.exec(
+        select(WalletMarketResolutionAudit).where(
+            WalletMarketResolutionAudit.wallet_address == "0xledger"
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].market_id == "0xledgermkt"
+    assert rows[0].is_win is True
+    assert rows[0].source == "RUNTIME_CLOSE"
+
+
+def test_LEDGER_idempotent_same_wallet_market_outcome(session, monkeypatch):
+    """Calling the helper twice for the same (wallet, market, outcome) must
+    increment MFWR only ONCE (via UniqueConstraint)."""
+    from app.config import get_settings
+    from app.models.trade import WalletMarketResolutionAudit
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", True)
+
+    _make_mfwr(session, "0xidem", wins=50, losses=2)
+    _make_rmr(session, "0xidemmkt", winning="Yes")
+    trade1 = _make_trade(session, "0xidem", "0xidemmkt", "Yes")
+    _close_paper_with_reason(session, trade1, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+
+    mfwr_after_first = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xidem")
+    ).one()
+    assert mfwr_after_first.resolved_winning_markets == 51  # first increment OK
+
+    # Now simulate a SECOND close on the same (wallet, market, outcome)
+    # (e.g. partial close + re-resolution scenario, or duplicate trade)
+    trade2 = PaperTrade(
+        id="pt-idem-2",
+        market_id="0xidemmkt",
+        outcome="Yes",
+        side="BUY",
+        quantity=10.0,
+        average_price=0.50,
+        notional_usd=5.0,
+        status="open",
+        opened_at=datetime.now(UTC) - timedelta(minutes=5),
+        wallet_address="0xidem",
+    )
+    session.add(trade2)
+    session.commit()
+    _close_paper_with_reason(session, trade2, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+
+    mfwr_after_second = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xidem")
+    ).one()
+    # Must STILL be 51 — second call did NOT double-count
+    assert mfwr_after_second.resolved_winning_markets == 51, (
+        f"Ledger dedup failed — got {mfwr_after_second.resolved_winning_markets}, "
+        f"expected 51 (only first close should count)"
+    )
+    # Only 1 ledger row total
+    rows = session.exec(
+        select(WalletMarketResolutionAudit).where(
+            WalletMarketResolutionAudit.wallet_address == "0xidem"
+        )
+    ).all()
+    assert len(rows) == 1
+
+
+def test_LEDGER_counts_two_distinct_markets(session, monkeypatch):
+    """Two different markets for the same wallet must BOTH be counted."""
+    from app.config import get_settings
+    from app.models.trade import WalletMarketResolutionAudit
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", True)
+
+    _make_mfwr(session, "0xtwo", wins=50, losses=2)
+    _make_rmr(session, "0xmkt-A", winning="Yes")
+    _make_rmr(session, "0xmkt-B", winning="No")
+
+    trade_a = _make_trade(session, "0xtwo", "0xmkt-A", "Yes")
+    _close_paper_with_reason(session, trade_a, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+
+    trade_b = _make_trade(session, "0xtwo", "0xmkt-B", "Yes")
+    _close_paper_with_reason(session, trade_b, reason=CLOSE_REASON_RESOLVED, exit_price=0.0)
+
+    mfwr = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xtwo")
+    ).one()
+    assert mfwr.resolved_winning_markets == 51  # +1 from mkt-A (Yes won)
+    assert mfwr.resolved_losing_markets == 3    # +1 from mkt-B (Yes lost, winner was No)
+
+    rows = session.exec(
+        select(WalletMarketResolutionAudit).where(
+            WalletMarketResolutionAudit.wallet_address == "0xtwo"
+        )
+    ).all()
+    assert len(rows) == 2
+
+
+def test_LEDGER_runtime_NEVER_touches_audit_at(session, monkeypatch):
+    """The runtime helper must never advance MFWR.audit_at.
+    (Replaces the dedup-by-audit_at logic that broke the batch view.)"""
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", True)
+
+    old_audit = datetime(2026, 4, 29, tzinfo=UTC)
+    _make_mfwr(session, "0xkeepauditat", wins=50, losses=2, audit_at=old_audit)
+    _make_rmr(session, "0xmktX", winning="Yes",
+              end_date=datetime(2026, 5, 13, tzinfo=UTC))
+    trade = _make_trade(session, "0xkeepauditat", "0xmktX", "Yes")
+    _close_paper_with_reason(session, trade, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+
+    mfwr = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xkeepauditat")
+    ).one()
+    audit_at_after = mfwr.audit_at
+    if audit_at_after and audit_at_after.tzinfo is None:
+        audit_at_after = audit_at_after.replace(tzinfo=UTC)
+    assert audit_at_after == old_audit, (
+        f"Runtime must NOT change audit_at. Got {audit_at_after}, "
+        f"expected {old_audit} (unchanged)."
     )

@@ -87,6 +87,12 @@ SAMPLE_SATURATION = 1000
 class CopyableScoreBreakdown:
     wallet_address: str
     score: float | None
+    # P4-C v2 (review audit 2026-05-13): explicit decisional flag.
+    # decisional=False means: partial scoring, DO NOT use for promotion/lane
+    # decisions. Score is informational only.
+    decisional: bool = False
+    sub_scores_available: int = 0
+    sub_scores_required: int = 6  # min 6/8 to be decisional
     # Component sub-scores (None if insufficient data)
     resolved_wr_quality: float | None = None
     sample_size_confidence: float | None = None
@@ -393,6 +399,17 @@ def compute_wallet_score(
     breakdown.score = round(score, 4)
     breakdown.weights_applied = {k: WEIGHTS[k] for k in available}
     breakdown.weights_total_applied = round(weight_total_avail, 4)
+
+    # P4-C v2 (review audit 2026-05-13): decisional flag.
+    # Partial scoring (< 6/8 sub-scores) is informational only — cannot
+    # be used for promotion / lane decisions.
+    breakdown.sub_scores_available = len(available)
+    breakdown.decisional = breakdown.sub_scores_available >= breakdown.sub_scores_required
+    if not breakdown.decisional:
+        breakdown.notes.append(
+            f"NOT DECISIONAL: only {breakdown.sub_scores_available}/{breakdown.sub_scores_required} "
+            f"sub-scores available. Wait for EntryPriceAudit + PublicTrade post-P0 data."
+        )
     return breakdown
 
 

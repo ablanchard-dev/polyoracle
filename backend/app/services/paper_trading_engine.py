@@ -313,34 +313,27 @@ def _apply_synth_exit_slippage(exit_price: float, trade_side: str) -> tuple[floa
 def _b22_runtime_update_mfwr_on_resolved_close(
     session: Session, trade: PaperTrade,
 ) -> None:
-    """Phase G HOTFIX (Round 8 review audit, 2026-05-13) — single-market MFWR
-    increment on RESOLVED close.
+    """Phase G ledger (Round 8 review audit, 2026-05-13) — single-market MFWR
+    increment on RESOLVED close via dedicated dedup ledger.
 
-    IMPORTANT: this helper does NOT update `mfwr.audit_at`. Reason:
+    DEDUP via `WalletMarketResolutionAudit` (unique wallet+market+outcome):
+      1. Insert ledger row first; UniqueConstraint raises if already counted.
+      2. If insert succeeds → increment MFWR W or L, recompute wr.
+      3. If insert raises IntegrityError → already counted, skip silently.
+      4. audit_at is NEVER touched here (only batch B22 advances it).
 
-      audit_at = "wallet a été audité jusqu'à cette date" (= batch B22 promise)
-      audit_at ≠ "un market a été vu à cette date" (= bad runtime semantic)
-
-    If we bumped audit_at to now() after processing a SINGLE market, then ALL
-    OTHER un-counted markets between old audit_at and now would become
-    invisible to the next batch B22 (rmr.end_date > audit_at filter would
-    exclude them). That's the review bug identified 2026-05-13.
-
-    Current behavior: dedup ONLY via audit_at (= unsound when called per-trade,
-    can double-count if helper is called twice for the same wallet+market). The
-    feature flag `settings.enable_b22_runtime_hook` is False by default until
-    a proper `WalletMarketResolutionAudit` ledger table is added (unique
-    wallet+market+outcome). Until then, this helper is disabled in `_close_paper_with_reason()`.
-
-    Defence-in-depth: wrapped in try/except. Even if enabled by mistake, the
-    helper does not crash the trade close.
+    Idempotent: multiple calls for the same (wallet, market, outcome) only
+    increment once. Safe to call per-PaperTrade close.
     """
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
     try:
         wallet = trade.wallet_address
         market_id = trade.market_id
         if not wallet or not market_id:
             return
         from app.models.wallet import MarketFirstWalletRecord, ResolvedMarketRecord
+        from app.models.trade import WalletMarketResolutionAudit
+        from uuid import uuid4 as _uuid4
 
         # 1. Lookup RMR (with condition_id fallback — same P0.1 pattern)
         rmr = session.get(ResolvedMarketRecord, market_id)
@@ -353,54 +346,74 @@ def _b22_runtime_update_mfwr_on_resolved_close(
         if rmr is None or not rmr.closed or rmr.winning_outcome_name is None:
             return  # market not resolved in our DB — skip
 
-        # 2. Lookup MFWR for this wallet
-        mfwr = session.exec(
-            select(MarketFirstWalletRecord).where(
-                MarketFirstWalletRecord.address == wallet.lower()
-            )
-        ).first()
-        if mfwr is None:
-            return  # wallet not in our cohort tracking
+        # 2. Parse RMR end_date for ledger record
+        rmr_end = None
+        if rmr.end_date:
+            try:
+                if "T" in rmr.end_date:
+                    rmr_end = datetime.fromisoformat(rmr.end_date.replace("Z", "+00:00"))
+                else:
+                    rmr_end = datetime.fromisoformat(rmr.end_date + "+00:00")
+                if rmr_end.tzinfo is None:
+                    rmr_end = rmr_end.replace(tzinfo=UTC)
+            except Exception:
+                rmr_end = None
 
-        # 3. Parse RMR end_date + dedup by audit_at
-        rmr_end_str = rmr.end_date
-        if not rmr_end_str:
-            return
-        try:
-            if "T" in rmr_end_str:
-                rmr_end = datetime.fromisoformat(rmr_end_str.replace("Z", "+00:00"))
-            else:
-                rmr_end = datetime.fromisoformat(rmr_end_str + "+00:00")
-        except Exception:
-            return
-        if rmr_end.tzinfo is None:
-            rmr_end = rmr_end.replace(tzinfo=UTC)
-        mfwr_audit = mfwr.audit_at
-        if mfwr_audit is not None:
-            if mfwr_audit.tzinfo is None:
-                mfwr_audit = mfwr_audit.replace(tzinfo=UTC)
-            if rmr_end <= mfwr_audit:
-                return  # already counted in MFWR (per batch promise)
-        # 4. Determine win vs loss based on trade.outcome vs RMR.winning_outcome_name
+        # 3. Determine win vs loss
         bot_outcome = (trade.outcome or "").strip().lower()
         winner = (rmr.winning_outcome_name or "").strip().lower()
         if not bot_outcome or not winner:
             return
-        if bot_outcome == winner:
+        is_win = (bot_outcome == winner)
+
+        # 4. Atomic dedup: try inserting the ledger row first. The UNIQUE
+        # constraint on (wallet, market, outcome) makes this idempotent.
+        normalized_wallet = wallet.lower()
+        ledger_row = WalletMarketResolutionAudit(
+            id=str(_uuid4()),
+            wallet_address=normalized_wallet,
+            market_id=market_id,
+            condition_id=rmr.condition_id,
+            outcome=trade.outcome or "",
+            resolved_winner=rmr.winning_outcome_name or "",
+            resolved_at=rmr_end,
+            is_win=is_win,
+            source="RUNTIME_CLOSE",
+            paper_trade_id=trade.id,
+        )
+        session.add(ledger_row)
+        try:
+            session.commit()
+        except _IntegrityError:
+            # Already counted (unique constraint) — skip increment
+            session.rollback()
+            return
+
+        # 5. Ledger insert succeeded → safe to increment MFWR counters.
+        mfwr = session.exec(
+            select(MarketFirstWalletRecord).where(
+                MarketFirstWalletRecord.address == normalized_wallet
+            )
+        ).first()
+        if mfwr is None:
+            return  # wallet not in our cohort tracking (ledger row still written for future)
+        if is_win:
             mfwr.resolved_winning_markets = (mfwr.resolved_winning_markets or 0) + 1
         else:
             mfwr.resolved_losing_markets = (mfwr.resolved_losing_markets or 0) + 1
-        # 5. Recompute wr.
-        # HOTFIX: do NOT touch audit_at. Let the batch B22 (which scans all
-        # PublicTrade for the wallet) be the one to advance audit_at.
         new_w = mfwr.resolved_winning_markets or 0
         new_l = mfwr.resolved_losing_markets or 0
         if new_w + new_l > 0:
             mfwr.resolved_market_win_rate = new_w / (new_w + new_l)
-        # audit_at INTENTIONALLY NOT updated here — see docstring.
+        # audit_at INTENTIONALLY NOT updated — only batch B22 may advance it
+        # after a full wallet scan. See _b22_incremental_update.py.
         session.add(mfwr)
         session.commit()
     except Exception as exc:
+        try:
+            session.rollback()
+        except Exception:
+            pass
         import logging
         logging.getLogger(__name__).warning(
             "B22 runtime MFWR update failed for trade %s: %s: %s",

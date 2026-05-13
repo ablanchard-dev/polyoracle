@@ -126,6 +126,16 @@ def init_db() -> None:
     if database_url.startswith("sqlite"):
         settings.resolved_sqlite_path.touch(exist_ok=True)
         ensure_sqlite_schema()
+        # Ensure WalletMarketResolutionAudit unique index (Phase G ledger)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_wallet_market_outcome ON walletmarketresolutionaudit "
+                    "(wallet_address, market_id, outcome)"
+                ))
+        except Exception:
+            pass  # table may not exist yet on fresh DB or migrations
     # v0.7.5 — run guard AFTER schema creation so a fresh install
     # (zero MFWR rows) doesn't fail validation; it'll only trigger
     # when an existing wrong-project DB is mounted.

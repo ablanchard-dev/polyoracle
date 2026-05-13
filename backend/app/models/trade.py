@@ -37,6 +37,38 @@ class PublicTrade(SQLModel, table=True):
     seen_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class WalletMarketResolutionAudit(SQLModel, table=True):
+    """P0 ledger (review audit 2026-05-13) — per-(wallet, market, outcome)
+    resolution audit log. Used to dedup B22 runtime increments.
+
+    Why a dedicated table instead of dedup-by-audit_at:
+    - audit_at semantics is "wallet audited up to this date" (batch promise)
+    - audit_at can NOT be "this single market was seen at this date" (runtime)
+    - Mixing them broke the batch view of un-counted historical markets.
+
+    Unique constraint (wallet_address, market_id, outcome) guarantees that
+    a runtime insert with the same triple raises IntegrityError → caller
+    skips the increment. Atomic + idempotent.
+    """
+    from sqlalchemy import UniqueConstraint as _UC
+    __table_args__ = (
+        _UC("wallet_address", "market_id", "outcome",
+            name="uq_wallet_market_outcome"),
+    )
+
+    id: str = Field(primary_key=True)
+    wallet_address: str = Field(index=True)
+    market_id: str = Field(index=True)
+    condition_id: str | None = None
+    outcome: str = ""
+    resolved_winner: str = ""
+    resolved_at: datetime | None = None
+    is_win: bool = False
+    source: str = "RUNTIME_CLOSE"  # RUNTIME_CLOSE | BATCH_SCAN | MANUAL
+    paper_trade_id: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class EntryPriceAudit(SQLModel, table=True):
     """P0.4 (Round 8, 2026-05-12) — per-trade entry-price provenance audit.
 
