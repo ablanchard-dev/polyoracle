@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     # Defaults False for safe rollout — flip to True to neutralize the
     # _elite_paper_bypass and the risk_engine ELITE+paper exceptions.
     paper_live_strict: bool = False
+    # Phase G HOTFIX (Round 8 review audit 2026-05-13):
+    # DISABLED by default until WalletMarketResolutionAudit ledger is in place.
+    # The runtime hook in _close_paper_with_reason()->_b22_runtime_update_mfwr_on_resolved_close()
+    # incorrectly sets mfwr.audit_at = now() after processing ONE market — that
+    # makes ALL other un-counted historical markets become invisible to the
+    # batch B22 (rmr.end_date <= audit_at filter). DO NOT enable until:
+    #   1. Ledger table added (unique wallet+market+outcome)
+    #   2. Runtime increments W/L only on ledger-insert-success
+    #   3. Runtime does NOT update audit_at (only batch B22 does, after full scan)
+    enable_b22_runtime_hook: bool = False
     mock_data_enabled: bool = True
     polymarket_public_enabled: bool = True
     market_fetch_limit: int = 100

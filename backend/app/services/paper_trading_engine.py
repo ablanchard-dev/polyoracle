@@ -313,19 +313,27 @@ def _apply_synth_exit_slippage(exit_price: float, trade_side: str) -> tuple[floa
 def _b22_runtime_update_mfwr_on_resolved_close(
     session: Session, trade: PaperTrade,
 ) -> None:
-    """Phase G (Round 8, 2026-05-13) — wire B22 incremental into close-loop runtime.
+    """Phase G HOTFIX (Round 8 review audit, 2026-05-13) — single-market MFWR
+    increment on RESOLVED close.
 
-    Each time a paper trade closes on RESOLVED (market settlement), refresh the
-    source wallet's MFWR W+L counters using the same dedup-by-audit_at logic as
-    the standalone B22 batch script. Pure DB read+write, no API call.
+    IMPORTANT: this helper does NOT update `mfwr.audit_at`. Reason:
 
-    Defence-in-depth: wrapped in try/except. The trade is already committed by
-    the caller; failure to update MFWR must NEVER crash the close or affect
-    bot state. Worst case: stale MFWR for one wallet (will be caught by the
-    next batch B22 run or daily reclass).
+      audit_at = "wallet a été audité jusqu'à cette date" (= batch B22 promise)
+      audit_at ≠ "un market a été vu à cette date" (= bad runtime semantic)
 
-    Dedup: only counts markets whose end_date > MFWR.audit_at. After successful
-    increment, bumps audit_at to max(current, end_date).
+    If we bumped audit_at to now() after processing a SINGLE market, then ALL
+    OTHER un-counted markets between old audit_at and now would become
+    invisible to the next batch B22 (rmr.end_date > audit_at filter would
+    exclude them). That's the review bug identified 2026-05-13.
+
+    Current behavior: dedup ONLY via audit_at (= unsound when called per-trade,
+    can double-count if helper is called twice for the same wallet+market). The
+    feature flag `settings.enable_b22_runtime_hook` is False by default until
+    a proper `WalletMarketResolutionAudit` ledger table is added (unique
+    wallet+market+outcome). Until then, this helper is disabled in `_close_paper_with_reason()`.
+
+    Defence-in-depth: wrapped in try/except. Even if enabled by mistake, the
+    helper does not crash the trade close.
     """
     try:
         wallet = trade.wallet_address
@@ -372,7 +380,7 @@ def _b22_runtime_update_mfwr_on_resolved_close(
             if mfwr_audit.tzinfo is None:
                 mfwr_audit = mfwr_audit.replace(tzinfo=UTC)
             if rmr_end <= mfwr_audit:
-                return  # already counted in MFWR
+                return  # already counted in MFWR (per batch promise)
         # 4. Determine win vs loss based on trade.outcome vs RMR.winning_outcome_name
         bot_outcome = (trade.outcome or "").strip().lower()
         winner = (rmr.winning_outcome_name or "").strip().lower()
@@ -382,12 +390,14 @@ def _b22_runtime_update_mfwr_on_resolved_close(
             mfwr.resolved_winning_markets = (mfwr.resolved_winning_markets or 0) + 1
         else:
             mfwr.resolved_losing_markets = (mfwr.resolved_losing_markets or 0) + 1
-        # 5. Recompute wr and bump audit_at
+        # 5. Recompute wr.
+        # HOTFIX: do NOT touch audit_at. Let the batch B22 (which scans all
+        # PublicTrade for the wallet) be the one to advance audit_at.
         new_w = mfwr.resolved_winning_markets or 0
         new_l = mfwr.resolved_losing_markets or 0
         if new_w + new_l > 0:
             mfwr.resolved_market_win_rate = new_w / (new_w + new_l)
-        mfwr.audit_at = datetime.now(UTC)
+        # audit_at INTENTIONALLY NOT updated here — see docstring.
         session.add(mfwr)
         session.commit()
     except Exception as exc:
@@ -491,12 +501,23 @@ def _close_paper_with_reason(
     session.commit()
     session.refresh(trade)
 
-    # Phase G (Round 8, 2026-05-13) — wire B22 incremental on RESOLVED close.
-    # Refresh the source wallet's MFWR W+L counters (incremental, dedup by
-    # audit_at). Defence-wrapped — failure to update never crashes the close
-    # or affects the trade state (already committed above).
+    # Phase G HOTFIX (Round 8 review audit, 2026-05-13):
+    # B22 runtime hook DISABLED by default because the dedup logic is unsound.
+    # The helper sets `mfwr.audit_at = now()` after processing ONE market,
+    # which would render invisible all OTHER un-counted historical markets
+    # (rmr.end_date <= audit_at filter excludes them from the next batch).
+    #
+    # Re-enable only after the WalletMarketResolutionAudit ledger is in place
+    # (unique(wallet, market, outcome) — see review audit verdict 2026-05-13).
+    # Until then, batch B22 (_b22_incremental_update.py) remains the source
+    # of truth for MFWR refreshes.
     if reason == CLOSE_REASON_RESOLVED:
-        _b22_runtime_update_mfwr_on_resolved_close(session, trade)
+        from app.config import get_settings as _gs
+        try:
+            if getattr(_gs(), "enable_b22_runtime_hook", False):
+                _b22_runtime_update_mfwr_on_resolved_close(session, trade)
+        except Exception:
+            pass
 
     return trade
 

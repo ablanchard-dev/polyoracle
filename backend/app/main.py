@@ -51,33 +51,44 @@ async def on_startup() -> None:
     except Exception:
         pass
 
-    # Phase G (Round 8, 2026-05-13) — auto-reclass quotidien REACTIVÉ.
-    # B22 incremental is now wired into _close_paper_with_reason (refresh MFWR
-    # on each RESOLVED close). The daily reclass thus has fresh W+L data to
-    # work with — promotions/demotions emerge naturally as the cohort evolves.
-    # Previous concern (2026-05-09 "cron tournerait à vide") is resolved.
+    # Phase G HOTFIX (Round 8 review audit, 2026-05-13):
+    # Auto-reclass daily — signature corrigée. run_weekly_reclass exige
+    # db_path + backup_dir en kwargs. Pré-hotfix l'appel était `(session,
+    # dry_run=False)` → TypeError silencieuse, cron tournait à vide.
     try:
         import asyncio
         import logging
-        from datetime import datetime, timezone
+        from pathlib import Path
         from app.services.weekly_reclass_service import run_weekly_reclass
         from app.database import engine
+        from app.config import get_settings
         from sqlmodel import Session
+
+        _settings = get_settings()
+        # Resolve db_path from settings.database_url or fall back to canonical path
+        _db_url = (_settings.database_url or "").replace("sqlite:///", "")
+        _db_path = Path(_db_url) if _db_url else Path("/opt/app/polyoracle/data/polyoracle.db")
+        _backup_dir = Path("/opt/app/polyoracle/data/_reclass_backups")
+        _backup_dir.mkdir(parents=True, exist_ok=True)
 
         async def _daily_reclass_loop():
             await asyncio.sleep(60)  # boot grace period
             while True:
                 try:
                     with Session(engine) as session:
-                        result = run_weekly_reclass(session, dry_run=False)
-                    promoted = len(result.get("promoted", []))
-                    demoted = len(result.get("demoted", []))
+                        result = run_weekly_reclass(
+                            session,
+                            db_path=_db_path,
+                            backup_dir=_backup_dir,
+                            dry_run=False,
+                        )
+                    promoted = len(getattr(result, "promoted", []) or [])
+                    demoted = len(getattr(result, "demoted", []) or [])
                     if promoted or demoted:
                         logging.getLogger(__name__).info(
                             "auto-reclass daily: +%d ELITE, -%d demoted",
                             promoted, demoted,
                         )
-                        # Force cohort reload at next polling cycle
                         try:
                             engine_instance = WalletPollingEngine.instance()
                             engine_instance._cohort = []
@@ -88,12 +99,15 @@ async def on_startup() -> None:
                         "auto-reclass daily failed: %s: %s",
                         type(exc).__name__, exc,
                     )
-                # Sleep 24h before next run
                 await asyncio.sleep(86400)
 
         asyncio.create_task(_daily_reclass_loop())
-    except Exception:
-        pass  # never crash startup on auto-reclass
+    except Exception as _bootexc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "auto-reclass daily failed to launch: %s: %s",
+            type(_bootexc).__name__, _bootexc,
+        )
 
 
 app.include_router(health.router)

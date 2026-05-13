@@ -171,8 +171,14 @@ def test_b22_runtime_no_rmr_silent_skip(session):
 # ---------------- Integration with close-paper-with-reason ----------------
 
 
-def test_close_resolved_triggers_b22(session):
-    """CLOSED_RESOLVED close should trigger _b22_runtime_update."""
+def test_close_resolved_triggers_b22(session, monkeypatch):
+    """CLOSED_RESOLVED close triggers _b22_runtime_update — ONLY when feature
+    flag enable_b22_runtime_hook=True. Default is False per HOTFIX 2026-05-13.
+    """
+    # Enable the flag for this test
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "enable_b22_runtime_hook", True)
+
     _make_mfwr(session, "0xint", wins=50, losses=2)
     _make_rmr(session, "0xintmkt", winning="Yes")
     trade = _make_trade(session, "0xint", "0xintmkt", "Yes")
@@ -208,12 +214,110 @@ def test_b22_runtime_failure_does_not_crash_close(session, monkeypatch):
 
     import app.services.paper_trading_engine as pte
     monkeypatch.setattr(pte, "_b22_runtime_update_mfwr_on_resolved_close", _explode)
-    # close should still work — _close_paper_with_reason catches in our wire?
-    # Actually our wire calls the function directly without try/except. Let me
-    # verify the close DOES still commit the trade even when B22 raises.
     try:
         _close_paper_with_reason(session, trade, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
     except RuntimeError:
         pass  # expected — but trade should be committed already
     refreshed = session.get(PaperTrade, trade.id)
     assert refreshed.status == "closed"  # already committed before B22 hook
+
+
+# ============================================================
+# Phase G HOTFIX (Round 8 review audit 2026-05-13) — tests qui catch
+# le vrai bug : runtime processes ONE market, mais audit_at = now() rendrait
+# invisibles les autres markets non comptés. Test critique.
+# ============================================================
+
+
+def test_HOTFIX_runtime_must_not_invisibilize_uncounted_markets(session):
+    """
+    BUG INITIAL (review audit 2026-05-13) :
+    Le helper runtime set `audit_at = now()` après processing UN seul market.
+    Conséquence : tous les autres markets résolus entre l'ancien audit_at
+    et now mais NON encore comptés deviennent invisibles pour le batch B22
+    (filtre rmr.end_date > audit_at les exclut).
+
+    Ce test simule le scénario :
+      - wallet audit_at = 2026-04-29
+      - 3 markets résolus entre 2026-05-01 et 2026-05-13
+      - runtime ne traite QUE le market #3 (le plus récent)
+      - les markets #1 et #2 doivent rester comptables par le batch futur
+
+    Avec le bug : audit_at devient now() = 2026-05-13, donc end_date des
+    markets #1 et #2 (< now) deviennent <= audit_at → ils sont skip.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    old_audit = _dt(2026, 4, 29, tzinfo=UTC)
+    _make_mfwr(session, "0xbacklog", wins=80, losses=2, audit_at=old_audit)
+
+    # 3 markets résolus à des dates différentes, tous APRÈS old audit_at
+    _make_rmr(
+        session, market_id="0xmkt-may01", winning="Yes",
+        end_date=_dt(2026, 5, 1, tzinfo=UTC),
+    )
+    _make_rmr(
+        session, market_id="0xmkt-may07", winning="Yes",
+        end_date=_dt(2026, 5, 7, tzinfo=UTC),
+    )
+    _make_rmr(
+        session, market_id="0xmkt-may13", winning="Yes",
+        end_date=_dt(2026, 5, 13, tzinfo=UTC),
+    )
+
+    # Runtime traite UNIQUEMENT le market #3 (le plus récent)
+    trade = _make_trade(session, "0xbacklog", "0xmkt-may13", "Yes")
+    _b22_runtime_update_mfwr_on_resolved_close(session, trade)
+
+    # Après le runtime, audit_at NE DOIT PAS être avancé à now() — sinon
+    # les 2 autres markets seront skip par un batch futur.
+    mfwr = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xbacklog")
+    ).one()
+    audit_at_after = mfwr.audit_at
+    if audit_at_after and audit_at_after.tzinfo is None:
+        audit_at_after = audit_at_after.replace(tzinfo=UTC)
+
+    # Le batch utilise `rmr.end_date > audit_at` pour décider de comptablité.
+    # Les markets #1 (may01) et #2 (may07) doivent rester comptables.
+    may01 = _dt(2026, 5, 1, tzinfo=UTC)
+    may07 = _dt(2026, 5, 7, tzinfo=UTC)
+    assert audit_at_after is None or audit_at_after <= may01, (
+        f"REGRESSION : audit_at={audit_at_after} > may01={may01} → market #1 "
+        f"deviendra invisible pour le batch B22. C'est exactement le bug "
+        f"identifié par review 2026-05-13. Le runtime ne doit pas avancer "
+        f"audit_at après processing d'un seul market — il faut un ledger."
+    )
+    assert audit_at_after is None or audit_at_after <= may07, (
+        f"REGRESSION : audit_at={audit_at_after} > may07={may07} → market #2 "
+        f"deviendra invisible pour le batch B22."
+    )
+
+
+def test_HOTFIX_runtime_hook_disabled_by_default(session):
+    """Le hook runtime DOIT être disabled par défaut tant que le ledger
+    n'est pas en place (settings.enable_b22_runtime_hook = False)."""
+    from app.config import get_settings
+    s = get_settings()
+    assert getattr(s, "enable_b22_runtime_hook", True) is False, (
+        "enable_b22_runtime_hook doit être False par défaut. La logique audit_at "
+        "actuelle est unsound (cf. review audit 2026-05-13)."
+    )
+
+
+def test_HOTFIX_close_resolved_skips_b22_when_flag_off(session, monkeypatch):
+    """Quand enable_b22_runtime_hook=False, le close RESOLVED ne touche
+    PAS MFWR. Le batch B22 reste source of truth."""
+    from app.config import get_settings
+    _make_mfwr(session, "0xskip", wins=50, losses=2, audit_at=datetime.now(UTC) - timedelta(days=10))
+    _make_rmr(session, "0xskipmkt", winning="Yes")
+    trade = _make_trade(session, "0xskip", "0xskipmkt", "Yes")
+
+    # Default config has enable_b22_runtime_hook = False
+    _close_paper_with_reason(session, trade, reason=CLOSE_REASON_RESOLVED, exit_price=1.0)
+    mfwr = session.exec(
+        select(MarketFirstWalletRecord).where(MarketFirstWalletRecord.address == "0xskip")
+    ).one()
+    # MFWR doit être inchangé (hook désactivé)
+    assert mfwr.resolved_winning_markets == 50, (
+        "Le hook ne doit pas modifier MFWR quand enable_b22_runtime_hook=False"
+    )
