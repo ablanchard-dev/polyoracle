@@ -347,4 +347,23 @@ class ClobRetryService:
             opened_at=now,
         )
         self.session.add(pt)
+
+        # Register the new position with the adaptive close scheduler so it
+        # gets re-checked at a cadence appropriate to its duration bucket.
+        # Without this, phase 2 trades stay open forever (postmortem
+        # 2026-05-14 13:12 UTC: 32 positions opened 4h+ ago never closed).
+        try:
+            from app.services.adaptive_close_scheduler import get_scheduler
+            market_row = self.session.get(Market, pending.market_id) if pending.market_id else None
+            bucket = getattr(market_row, "duration_bucket", None) if market_row else None
+            get_scheduler().register_position(
+                position_id=pt.id,
+                market_id=pending.market_id or "",
+                duration_bucket=bucket,
+            )
+        except Exception:
+            # Scheduler is best-effort; boot_register_open_positions catches
+            # this on next restart.
+            pass
+
         return pt.id
