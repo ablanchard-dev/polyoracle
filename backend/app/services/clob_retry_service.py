@@ -320,7 +320,10 @@ class ClobRetryService:
         """Open a paper trade from a pending retry. Phase 2 only.
 
         Uses raw_signal_price (= source wallet entry) as average_price reference.
-        notional_usd is preserved. signal_id None (retry-originated, not signal).
+        notional is HARD-CAPPED at settings.clob_retry_max_trade_notional_usd
+        to protect against source wallets sizing $9000+ trades (would breach
+        TOO_MUCH_EXPOSURE on our bot's $100-800 capital). signal_id None
+        (retry-originated, not signal).
         """
         # Compute quantity from notional and current best ask if available, else from raw_signal_price
         ref_price = (
@@ -330,7 +333,13 @@ class ClobRetryService:
         ) or pending.raw_signal_price
         if ref_price <= 0:
             ref_price = pending.raw_signal_price
-        qty = pending.notional_usd / ref_price if ref_price > 0 else 0.0
+        # Hard-cap notional (postmortem 2026-05-14 13:47 : whale wallet
+        # trading $9270 caused 32x exposure breach on a $487 capital bot).
+        capped_notional = min(
+            float(pending.notional_usd),
+            float(self.settings.clob_retry_max_trade_notional_usd),
+        )
+        qty = capped_notional / ref_price if ref_price > 0 else 0.0
 
         pt = PaperTrade(
             id=f"papertrade-clobretry-{uuid.uuid4().hex[:16]}",
@@ -339,7 +348,7 @@ class ClobRetryService:
             side=pending.side or "BUY",
             quantity=round(qty, 6),
             average_price=round(ref_price, 6),
-            notional_usd=round(pending.notional_usd, 4),
+            notional_usd=round(capped_notional, 4),
             wallet_address=pending.wallet_address,
             signal_id=None,
             auto=True,

@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     clob_retry_batch_size: int = 20
     clob_retry_max_age_seconds: int = 300
     clob_retry_worker_interval_seconds: int = 5
+    # Hard cap notional per phase 2 trade. Le worker ouvre des positions
+    # avec pending.notional_usd qui est le notional du wallet SOURCE (peut
+    # être un whale à $9000+). Ce cap protège l'exposure du bot peu importe
+    # le sizing source. Default $20 = sain pour tier SMALL ($800 capital,
+    # 2R = ~$32, 1R = ~$16). En tier NANO ($100), 2R = $4 mais le min_stake
+    # de Polymarket est $5 donc $20 reste un cap raisonnable.
+    clob_retry_max_trade_notional_usd: float = 20.0
     mock_data_enabled: bool = True
     polymarket_public_enabled: bool = True
     market_fetch_limit: int = 100

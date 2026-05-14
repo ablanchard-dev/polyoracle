@@ -281,6 +281,34 @@ def test_process_pending_expires_after_max_attempts() -> None:
         assert len(ntds) == 1
 
 
+def test_phase2_caps_notional_at_max_trade_setting() -> None:
+    # Postmortem 2026-05-14 : whale wallet trading $9000+ caused phase 2
+    # workers to open papertrades with that notional, breaching exposure
+    # cap (32x on $487 capital). Fix : hard cap via
+    # settings.clob_retry_max_trade_notional_usd (default $20).
+    eng = _engine()
+    with Session(eng) as session:
+        _create_market(session)
+        svc = ClobRetryService(session)
+        svc.settings.clob_retry_enabled = True
+        svc.settings.live_enabled = False
+        svc.settings.clob_retry_auto_open_paper = True
+        svc.settings.clob_retry_max_trade_notional_usd = 20.0
+
+        svc.maybe_queue(**_queue_args(notional_usd=9270.0))  # whale-sized
+        pending = session.exec(select(PendingClobRetry)).one()
+        pending.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(pending)
+        session.commit()
+
+        with patch.object(svc.market_scanner, "fetch_orderbook", return_value=_good_book_payload()):
+            svc.process_pending_batch()
+        papers = session.exec(select(PaperTrade)).all()
+        assert len(papers) == 1
+        # notional must be capped at $20, NOT $9270
+        assert papers[0].notional_usd <= 20.01, f"expected ≤$20, got ${papers[0].notional_usd}"
+
+
 def test_process_pending_expires_when_past_expires_at() -> None:
     eng = _engine()
     with Session(eng) as session:
