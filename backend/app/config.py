@@ -94,6 +94,15 @@ class Settings(BaseSettings):
     # TOO_MUCH_EXPOSURE en 4h30. $5 matche le R-sizing NANO (2R ≈ $4) et
     # permet 15 phase 2 + baseline en parallèle.
     clob_retry_max_trade_notional_usd: float = 5.0
+
+    # 2026-05-15 — STRICT_CUTOVER_AT override pour reset effective capital.
+    # ISO 8601 datetime UTC. Si set ET > EFFECTIVE_BASELINE_T0 constante, le
+    # paper_trading_engine.compute_effective_paper_capital() filtre tous les
+    # realized_pnl WHERE opened_at >= STRICT_CUTOVER_AT au lieu de la baseline
+    # constante. Effet : effective_capital reset à 100€ + post-cutover PnL.
+    # Use case : tester graduated capital tier par tier (NANO→TINY→MICRO→...)
+    # en condition réelle sans toucher DB historique.
+    strict_cutover_at: str | None = None
     mock_data_enabled: bool = True
     polymarket_public_enabled: bool = True
     market_fetch_limit: int = 100

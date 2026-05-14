@@ -218,6 +218,23 @@ def _resolve_baseline_for_capital_calc(strict_mode: bool) -> tuple[datetime | No
     """
     from app.services.baseline_constants import EFFECTIVE_BASELINE_T0
 
+    # 2026-05-15 — STRICT_CUTOVER_AT override (opérateur graduated capital test).
+    # Si settings.strict_cutover_at est défini ET > EFFECTIVE_BASELINE_T0, on
+    # l'utilise pour reset effective capital → tier resolution recommence à
+    # NANO. Permet de valider chaque tier (NANO→TINY→MICRO→SMALL...) en
+    # condition réelle sans toucher le DB historique.
+    try:
+        _override_raw = getattr(get_settings(), "strict_cutover_at", None)
+        if _override_raw:
+            _override_dt = datetime.fromisoformat(str(_override_raw).replace("Z", "+00:00"))
+            if _override_dt.tzinfo is None:
+                from datetime import UTC as _UTC
+                _override_dt = _override_dt.replace(tzinfo=_UTC)
+            if _override_dt > EFFECTIVE_BASELINE_T0:
+                return (_override_dt, "strict_cutover_at_override")
+    except Exception:
+        pass
+
     if strict_mode:
         return (EFFECTIVE_BASELINE_T0, "effective_baseline_t0")
 

@@ -192,3 +192,68 @@ def test_strict_mode_pre_p0_2_bug_prevented(session):
         f"P0.2 bug should be fixed: strict mode must ignore file T0. "
         f"Got {capital}, expected 120 (only 4 post-baseline trades counted)."
     )
+
+
+# ---------------- STRICT_CUTOVER_AT override (2026-05-15 graduated capital) ----------------
+
+
+def test_strict_cutover_at_override_wins_over_effective_baseline_t0():
+    """When settings.strict_cutover_at is set + > EFFECTIVE_BASELINE_T0, use it.
+
+    Use case opérateur 2026-05-15 : reset effective capital pour tester chaque
+    tier (NANO→TINY→MICRO→SMALL...) en condition réelle.
+    """
+    later_cutover = EFFECTIVE_BASELINE_T0 + timedelta(days=4)
+    with patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = later_cutover.isoformat()
+        baseline, src = _resolve_baseline_for_capital_calc(strict_mode=True)
+    assert baseline == later_cutover
+    assert src == "strict_cutover_at_override"
+
+
+def test_strict_cutover_at_override_ignored_if_older_than_t0():
+    """Override ANTERIEUR à EFFECTIVE_BASELINE_T0 → ignoré, fallback T0."""
+    older_cutover = EFFECTIVE_BASELINE_T0 - timedelta(days=1)
+    with patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = older_cutover.isoformat()
+        baseline, src = _resolve_baseline_for_capital_calc(strict_mode=True)
+    # Doit retourner EFFECTIVE_BASELINE_T0, pas l'override
+    assert baseline == EFFECTIVE_BASELINE_T0
+    assert src == "effective_baseline_t0"
+
+
+def test_strict_cutover_at_override_invalid_format_ignored():
+    """ISO 8601 invalide → fallback graceful sur T0."""
+    with patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = "not-a-date"
+        baseline, src = _resolve_baseline_for_capital_calc(strict_mode=True)
+    assert baseline == EFFECTIVE_BASELINE_T0
+    assert src == "effective_baseline_t0"
+
+
+def test_strict_cutover_at_override_none_fallback_t0():
+    """settings.strict_cutover_at = None → comportement original."""
+    with patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = None
+        baseline, src = _resolve_baseline_for_capital_calc(strict_mode=True)
+    assert baseline == EFFECTIVE_BASELINE_T0
+    assert src == "effective_baseline_t0"
+
+
+def test_strict_cutover_at_override_filters_trades_correctly(session):
+    """End-to-end : override reset effective capital → seul PnL post-override compte."""
+    cutover = EFFECTIVE_BASELINE_T0 + timedelta(days=3)
+    # 5 trades entre T0 et cutover (= 50€ excluded post-reset)
+    for i in range(5):
+        _add_trade(session, EFFECTIVE_BASELINE_T0 + timedelta(hours=i + 1), 10.0)
+    # 3 trades post-cutover (= 12€ included)
+    for i in range(3):
+        _add_trade(session, cutover + timedelta(hours=i + 1), 4.0)
+
+    with patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.paper_live_strict = True
+        gs.return_value.strict_cutover_at = cutover.isoformat()
+        capital = compute_effective_paper_capital(session)
+
+    # base 100 + only post-cutover PnL 12 = 112
+    assert capital == 112.0
