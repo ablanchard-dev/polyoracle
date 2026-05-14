@@ -501,9 +501,15 @@ class TradeAuditEngine:
             # paper) we still return WATCH. The caller appends warning
             # 'live_shadow_paper_bypass_orderbook' for M1 v5 paper-vs-live
             # gap measurement.
+            # paper_live_strict=true ALSO disables this bypass to stay
+            # consistent with capital_allocator._elite_paper_bypass and
+            # risk_engine. Otherwise audit accepts → aval rejects LOW_LIQUIDITY
+            # → trade lost between layers (observed VPS post-deploy: 24
+            # bypass triggered → 0 papertrade → 100% killed downstream).
             paper_mode = bool(
                 self.settings.paper_trading_enabled
                 and not self.settings.live_enabled
+                and not self.settings.paper_live_strict
             )
             if (
                 paper_mode

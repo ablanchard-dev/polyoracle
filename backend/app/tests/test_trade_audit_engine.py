@@ -82,6 +82,7 @@ def test_decide_returns_ignore_when_wallet_unknown() -> None:
 def _decide_with_overrides(
     *,
     live_enabled: bool,
+    paper_live_strict: bool = False,
     wallet_tier: str = "ELITE",
     wallet_score: float = 95.0,
     quality: str = "BAD",
@@ -97,6 +98,7 @@ def _decide_with_overrides(
         engine_service = TradeAuditEngine(session)
         engine_service.settings.live_enabled = live_enabled
         engine_service.settings.paper_trading_enabled = True
+        engine_service.settings.paper_live_strict = paper_live_strict
         edge = EdgeBreakdown(
             raw_edge=copyable_edge,
             spread_impact=0.005,
@@ -150,3 +152,16 @@ def test_paper_mode_bypass_requires_liquidity_data() -> None:
     # market_liquidity_score=0 means no data at all → fall back to WATCH
     # (avoids accepting trades on markets with zero data signal).
     assert _decide_with_overrides(live_enabled=False, market_liquidity_score=0.0) == "WATCH"
+
+
+def test_paper_live_strict_disables_orderbook_bypass() -> None:
+    # paper_live_strict=True is the explicit "live-truth" mode where paper
+    # mirrors what live would execute. _elite_paper_bypass in capital_allocator
+    # and risk_engine is gated on `not paper_live_strict`; we mirror the same
+    # gate here so audit and aval stay consistent (no trades lost between
+    # layers). Same conditions as the bypass-success test, only difference is
+    # paper_live_strict=True → expected WATCH.
+    assert _decide_with_overrides(
+        live_enabled=False,
+        paper_live_strict=True,
+    ) == "WATCH"
