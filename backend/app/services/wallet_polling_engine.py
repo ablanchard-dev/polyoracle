@@ -635,6 +635,38 @@ class WalletPollingEngine:
                 # B8-B: log non-PAPER decisions explicitly so they don't
                 # disappear from the observability surface.
                 if signal.decision != "PAPER_TRADE":
+                    # 2026-05-14 CLOB retry queue hook (Round 9 review fix).
+                    # Si rejet uniquement causé par orderbook BAD/UNTRADABLE
+                    # sur un audit qui pass tous les autres gates strict (ELITE
+                    # + strong edge + tq>=70 + liq>0), au lieu de rejeter
+                    # définitivement on enqueue dans PendingClobRetry. Le
+                    # worker re-test CLOB toutes les 10-180s, ouvre paper SI
+                    # tous les strict gates passent au retry (sinon expire).
+                    # Aucun seuil baissé.
+                    try:
+                        from app.services.clob_retry_service import ClobRetryService
+                        _retry_svc = ClobRetryService(session)
+                        _queued_id = _retry_svc.maybe_queue(
+                            audit_id=expected_audit_id,
+                            wallet_address=audit_record.wallet_address,
+                            market_id=audit_record.market_id,
+                            outcome=audit_record.outcome,
+                            side=audit_record.side,
+                            raw_signal_price=audit_record.price,
+                            notional_usd=audit_record.notional_usd,
+                            copyable_edge=audit_record.copyable_edge,
+                            trade_quality_score=audit_record.trade_quality_score,
+                            wallet_tier=audit_record.wallet_tier,
+                            orderbook_quality=audit_record.orderbook_quality,
+                            market_liquidity_score=audit_record.market_liquidity_score,
+                        )
+                    except Exception as _qexc:
+                        logger.warning(
+                            "clob_retry maybe_queue failed for audit %s: %s",
+                            expected_audit_id, _qexc,
+                        )
+                        _queued_id = None
+
                     no_trade_payload = json.dumps({
                         "audit_id": expected_audit_id,
                         "audit_decision": audit_record.decision,
@@ -644,6 +676,7 @@ class WalletPollingEngine:
                         "trade_quality_score": audit_record.trade_quality_score,
                         "outcome": audit_record.outcome,
                         "side": audit_record.side,
+                        "clob_retry_id": _queued_id,
                     })
                     no_trade = NoTradeDecision(
                         id=str(_uuid4()),

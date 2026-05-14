@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     #   - audit_at is NEVER touched (only batch B22 advances it)
     # Re-enabled by default. Set False to disable for diagnostics.
     enable_b22_runtime_hook: bool = True
+
+    # 2026-05-14 CLOB retry queue (Round 9 review strict-compatible fix).
+    # Quand orderbook BAD/UNTRADABLE bloque un audit ELITE strong + tq>=70 +
+    # liq>0, on enqueue dans PendingClobRetry au lieu de rejeter. Le worker
+    # re-test CLOB toutes les 10-180s, et n'ouvre paper QUE si tous les gates
+    # strict passent au moment du retry. Drill 2026-05-14 montre 42% des
+    # candidats récupérables (CLOB book OK quelques min après l'audit).
+    # clob_retry_auto_open_paper=False = phase 1 collecte+metric uniquement
+    # (zéro risque). Flip à True après validation 1h pour activer re-open.
+    clob_retry_enabled: bool = True
+    clob_retry_auto_open_paper: bool = False
+    clob_retry_max_attempts: int = 5
+    clob_retry_batch_size: int = 20
+    clob_retry_max_age_seconds: int = 300
+    clob_retry_worker_interval_seconds: int = 5
     mock_data_enabled: bool = True
     polymarket_public_enabled: bool = True
     market_fetch_limit: int = 100

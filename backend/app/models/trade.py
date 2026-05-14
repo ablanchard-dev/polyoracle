@@ -188,3 +188,48 @@ class NoTradeDecision(SQLModel, table=True):
     details: str | None = None
     saved_loss_estimate: float = 0.0
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PendingClobRetry(SQLModel, table=True):
+    """2026-05-14 CLOB retry queue — Round 9 review strict-compatible fix.
+
+    Quand un audit ELITE strong-edge + tq>=70 + liq>0 est rejeté UNIQUEMENT
+    pour cause d'orderbook BAD/UNTRADABLE (CLOB 404), au lieu de rejeter
+    définitivement on enqueue ici. Un worker async re-fetch CLOB toutes les
+    10-180s et si le book devient GOOD/ACCEPTABLE ET que tous les autres
+    gates strict passent toujours (edge, spread, liq, freshness), on ouvre
+    le paper trade.
+
+    Si le book reste BAD ou si edge/spread/etc décline, on expire (max 300s)
+    et on log NoTradeDecision CLOB_RETRY_EXPIRED/REJECTED.
+
+    Aucun seuil n'est baissé : on rejette toujours les trades vraiment non-
+    tradables live. On corrige juste un bug timing : sur crypto 5min auto-
+    générés, le book CLOB arrive parfois quelques minutes après l'audit
+    initial.
+    """
+    id: str = Field(primary_key=True)
+    source_trade_id: str = Field(index=True, unique=True)
+    wallet_address: str = Field(index=True)
+    market_id: str = Field(index=True)
+    outcome: str | None = None
+    side: str | None = None
+
+    raw_signal_price: float
+    notional_usd: float
+    copyable_edge: float
+    trade_quality_score: float
+    wallet_tier: str
+
+    first_seen_at: datetime = Field(index=True)
+    next_retry_at: datetime = Field(index=True)
+    expires_at: datetime = Field(index=True)
+
+    retry_count: int = 0
+    # PENDING / FILLED_PAPER / EXPIRED / REJECTED / DUPLICATE / ERROR
+    status: str = Field(default="PENDING", index=True)
+
+    last_orderbook_quality: str | None = None
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

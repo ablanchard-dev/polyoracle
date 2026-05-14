@@ -148,6 +148,48 @@ async def on_startup() -> None:
             type(_bootexc).__name__, _bootexc,
         )
 
+    # 2026-05-14 CLOB retry worker (Round 9 review strict-compatible fix).
+    # Re-test orderbook BAD/UNTRADABLE candidates every ~5s; if CLOB book
+    # becomes GOOD/ACCEPTABLE and every strict gate still passes, the trade
+    # is opened (when clob_retry_auto_open_paper=True) or marked READY_TO_FILL
+    # (phase 1 measure-only). Drill 2026-05-14 shows 42% recoverable.
+    try:
+        import asyncio
+        import logging
+        from sqlmodel import Session as _Session
+        from app.database import engine as _eng
+        from app.config import get_settings as _gs
+        from app.services.clob_retry_service import ClobRetryService
+
+        _s = _gs()
+        if _s.clob_retry_enabled:
+            async def _clob_retry_loop():
+                await asyncio.sleep(60)  # boot grace
+                interval = max(1, int(_s.clob_retry_worker_interval_seconds))
+                _logger = logging.getLogger(__name__)
+                while True:
+                    try:
+                        with _Session(_eng) as session:
+                            svc = ClobRetryService(session)
+                            counts = svc.process_pending_batch()
+                        non_zero = {k: v for k, v in counts.items() if v > 0}
+                        if non_zero:
+                            _logger.info("clob_retry batch %s", non_zero)
+                    except Exception as _exc:
+                        _logger.warning(
+                            "clob_retry loop iteration error %s: %s",
+                            type(_exc).__name__, _exc,
+                        )
+                    await asyncio.sleep(interval)
+
+            asyncio.create_task(_clob_retry_loop())
+    except Exception as _bootexc2:
+        import logging
+        logging.getLogger(__name__).warning(
+            "clob_retry worker failed to launch: %s: %s",
+            type(_bootexc2).__name__, _bootexc2,
+        )
+
 
 app.include_router(health.router)
 app.include_router(markets.router)
