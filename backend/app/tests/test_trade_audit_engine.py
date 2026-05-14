@@ -83,6 +83,7 @@ def _decide_with_overrides(
     *,
     live_enabled: bool,
     paper_live_strict: bool = False,
+    allow_non_strict_paper_research: bool = True,
     wallet_tier: str = "ELITE",
     wallet_score: float = 95.0,
     quality: str = "BAD",
@@ -99,6 +100,7 @@ def _decide_with_overrides(
         engine_service.settings.live_enabled = live_enabled
         engine_service.settings.paper_trading_enabled = True
         engine_service.settings.paper_live_strict = paper_live_strict
+        engine_service.settings.allow_non_strict_paper_research = allow_non_strict_paper_research
         edge = EdgeBreakdown(
             raw_edge=copyable_edge,
             spread_impact=0.005,
@@ -165,3 +167,79 @@ def test_paper_live_strict_disables_orderbook_bypass() -> None:
         live_enabled=False,
         paper_live_strict=True,
     ) == "WATCH"
+
+
+def test_bypass_requires_explicit_research_opt_in() -> None:
+    # 2026-05-14 — hard guard doctrine : même avec paper_live_strict=False,
+    # le bypass ne fire pas sans allow_non_strict_paper_research=True.
+    # Empêche un oubli .env d'activer le bypass sans intention explicite.
+    assert _decide_with_overrides(
+        live_enabled=False,
+        paper_live_strict=False,
+        allow_non_strict_paper_research=False,
+    ) == "WATCH"
+
+
+# ---------------------------------------------------------------------------
+# Hard guard config tests — 2026-05-14
+# ---------------------------------------------------------------------------
+
+def test_settings_default_strict_is_true() -> None:
+    # Default Settings doit avoir paper_live_strict=True (doctrine post-Round 9).
+    # Empêche qu'un démarrage sans .env shippe en mode permissif.
+    from app.config import Settings
+    s = Settings(paper_live_strict=True, allow_non_strict_paper_research=False)
+    assert s.paper_live_strict is True
+    assert s.allow_non_strict_paper_research is False
+
+
+def test_settings_refuses_prod_non_strict() -> None:
+    # En app_env=prod/vps, paper_live_strict=False doit raise au startup.
+    import pytest
+    from app.config import Settings
+    for env in ("production", "prod", "vps", "vps_prod"):
+        with pytest.raises(ValueError, match="PAPER_LIVE_STRICT=false interdit"):
+            Settings(
+                app_env=env,
+                live_enabled=False,
+                paper_live_strict=False,
+                allow_non_strict_paper_research=True,  # même avec opt-in research, prod refuse
+            )
+
+
+def test_settings_refuses_non_strict_without_research_optin() -> None:
+    # En dev, paper_live_strict=False sans allow_non_strict_paper_research=True
+    # doit aussi raise. Empêche un oubli flag.
+    import pytest
+    from app.config import Settings
+    with pytest.raises(ValueError, match="ALLOW_NON_STRICT_PAPER_RESEARCH=true"):
+        Settings(
+            app_env="development",
+            live_enabled=False,
+            paper_live_strict=False,
+            allow_non_strict_paper_research=False,
+        )
+
+
+def test_settings_allows_research_optin_in_dev() -> None:
+    # En dev avec opt-in explicite, autorisé.
+    from app.config import Settings
+    s = Settings(
+        app_env="development",
+        live_enabled=False,
+        paper_live_strict=False,
+        allow_non_strict_paper_research=True,
+    )
+    assert s.paper_live_strict is False
+    assert s.allow_non_strict_paper_research is True
+
+
+def test_settings_strict_true_in_prod_ok() -> None:
+    # En prod avec strict=True, OK (état cible).
+    from app.config import Settings
+    s = Settings(
+        app_env="production",
+        live_enabled=False,
+        paper_live_strict=True,
+    )
+    assert s.paper_live_strict is True

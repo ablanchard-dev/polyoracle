@@ -41,11 +41,25 @@ class Settings(BaseSettings):
     postgres_enabled: bool = False
     redis_enabled: bool = False
     paper_trading_enabled: bool = True
-    # P0/Phase A 2026-05-11: when True, paper applies EXACTLY the same gates
-    # as live (spread/liquidity/orderbook/copyable_edge/unknown-category).
-    # Defaults False for safe rollout — flip to True to neutralize the
-    # _elite_paper_bypass and the risk_engine ELITE+paper exceptions.
-    paper_live_strict: bool = False
+    # 2026-05-14 — doctrine opérateur review Round 9 :
+    # PAPER_LIVE_STRICT = vrai par défaut, inviolable en prod/VPS. Paper
+    # applique EXACTEMENT les mêmes gates que live (spread/liquidity/
+    # orderbook/copyable_edge/unknown-category). Le bypass orderbook dans
+    # TradeAuditEngine._decide() et _elite_paper_bypass dans
+    # capital_allocator/risk_engine ne fire QUE si TOUTES les conditions
+    # ci-dessous sont alignées :
+    #   - paper_trading_enabled=True
+    #   - live_enabled=False
+    #   - paper_live_strict=False  ← interdit en prod/VPS, voir model_post_init
+    #   - allow_non_strict_paper_research=True  ← opt-in explicite research
+    # Default historique (False) était dangereux : config.py shippait avec
+    # le bypass implicitement actif.
+    paper_live_strict: bool = True
+    # Opt-in research offline uniquement. Combiné avec paper_live_strict=False
+    # et app_env != prod/vps, autorise le bypass orderbook paper-mode pour
+    # explorer la cohort sans CLOB. JAMAIS en prod (bloqué par
+    # model_post_init).
+    allow_non_strict_paper_research: bool = False
     # Phase G ledger (2026-05-13): WalletMarketResolutionAudit table now in
     # place (unique wallet+market+outcome). The runtime hook in
     # _close_paper_with_reason()->_b22_runtime_update_mfwr_on_resolved_close()
@@ -143,6 +157,27 @@ class Settings(BaseSettings):
         if self.database_url:
             return self.database_url
         return f"sqlite:///{self.resolved_sqlite_path.as_posix()}"
+
+    def model_post_init(self, __context) -> None:
+        # 2026-05-14 — doctrine paper = live strict (opérateur).
+        # Refuser startup si on tourne en prod/VPS avec paper non-strict.
+        # Empêche un setup permissif accidentel sur le VPS Hostinger.
+        prod_envs = {"production", "prod", "vps", "vps_prod"}
+        is_prod = (self.app_env or "").lower() in prod_envs
+        if is_prod and not self.live_enabled and not self.paper_live_strict:
+            raise ValueError(
+                f"PAPER_LIVE_STRICT=false interdit en app_env={self.app_env!r}. "
+                "Paper doit rester live-strict en prod/VPS (= paper = live truth). "
+                "Pour research offline, set app_env=development AND "
+                "ALLOW_NON_STRICT_PAPER_RESEARCH=true sur poste local."
+            )
+        # En dev, on permet strict=False uniquement si opt-in explicite.
+        # Empêche oubli d'un flag .env qui activerait le bypass sans le savoir.
+        if not self.paper_live_strict and not self.allow_non_strict_paper_research:
+            raise ValueError(
+                "PAPER_LIVE_STRICT=false nécessite ALLOW_NON_STRICT_PAPER_RESEARCH=true "
+                "(opt-in research offline explicite). Sans ce flag, paper reste strict."
+            )
 
     @field_validator("allowed_live_jurisdictions", "cors_origins", mode="before")
     @classmethod

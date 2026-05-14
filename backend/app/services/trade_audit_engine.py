@@ -501,15 +501,20 @@ class TradeAuditEngine:
             # paper) we still return WATCH. The caller appends warning
             # 'live_shadow_paper_bypass_orderbook' for M1 v5 paper-vs-live
             # gap measurement.
-            # paper_live_strict=true ALSO disables this bypass to stay
-            # consistent with capital_allocator._elite_paper_bypass and
-            # risk_engine. Otherwise audit accepts → aval rejects LOW_LIQUIDITY
-            # → trade lost between layers (observed VPS post-deploy: 24
-            # bypass triggered → 0 papertrade → 100% killed downstream).
+            # 2026-05-14 — doctrine opérateur review Round 9 :
+            # Le bypass orderbook paper-mode est INVIOLABLE en prod/VPS.
+            # Triple gate alignée avec capital_allocator._elite_paper_bypass
+            # et risk_engine pour cohérence audit-aval :
+            #   1. paper_trading_enabled (paper mode)
+            #   2. not live_enabled (pas live)
+            #   3. not paper_live_strict (= mode permissif)
+            #   4. allow_non_strict_paper_research (= opt-in research offline
+            #      explicite — config refuse cette combo en prod/VPS)
             paper_mode = bool(
                 self.settings.paper_trading_enabled
                 and not self.settings.live_enabled
                 and not self.settings.paper_live_strict
+                and self.settings.allow_non_strict_paper_research
             )
             if (
                 paper_mode
