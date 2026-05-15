@@ -119,24 +119,41 @@ def test_500eur_medium_tier_short_mostly():
         assert allowed_b is False
 
 
-def test_5000eur_large_tier_balanced():
-    """v0.7.8 P6 — LARGE ($5k-50k): 1-1440 auto, 1-7d edge, >7d reject."""
+def test_5000eur_large_tier_caps_at_24h():
+    """Operator rule 2026-05-16 : avant $50k, aucun trade >24h.
+    LARGE ($5k-50k) : ULTRA_SHORT..MEDIUM auto, LONG/VERY_LONG HARD reject
+    (pas d'edge override pour long duration)."""
     for bucket in ("ULTRA_SHORT", "VERY_SHORT", "SHORT", "MEDIUM"):
         allowed, _ = filter_duration_for_capital(
             capital_total=5400.0, duration_bucket=bucket,
         )
         assert allowed is True, f"LARGE should accept {bucket} auto"
-    # LONG edge-conditional
-    allowed_long, _ = filter_duration_for_capital(
+    # LONG : hard reject même avec edge fort
+    rej_long, reason = filter_duration_for_capital(
         capital_total=5400.0, duration_bucket="LONG",
-        ev_lower_bound=0.10, capital_turnover_score=20.0,
+        ev_lower_bound=0.30, capital_turnover_score=50.0,
     )
-    assert allowed_long is True
-    # VERY_LONG reject at LARGE
-    rej, _ = filter_duration_for_capital(
+    assert rej_long is False
+    assert reason == "CAPITAL_LOCK_TOO_LONG"
+    # VERY_LONG hard reject
+    rej_vl, _ = filter_duration_for_capital(
         capital_total=5400.0, duration_bucket="VERY_LONG",
     )
-    assert rej is False
+    assert rej_vl is False
+
+
+def test_operator_rule_no_long_below_50k():
+    """Operator rule 2026-05-16 cascade : LONG/VERY_LONG hard reject below $50k
+    quel que soit l'edge. Tests capital 100, 1000, 10000, 49000."""
+    for cap in (100.0, 1000.0, 10000.0, 49000.0):
+        for bucket in ("LONG", "VERY_LONG"):
+            # Even with extreme edge, no allow
+            rej, reason = filter_duration_for_capital(
+                capital_total=cap, duration_bucket=bucket,
+                ev_lower_bound=0.50, capital_turnover_score=80.0,
+            )
+            assert rej is False, f"cap={cap} bucket={bucket} should reject"
+            assert reason == "CAPITAL_LOCK_TOO_LONG"
 
 
 def test_50000eur_huge_tier_institutional():

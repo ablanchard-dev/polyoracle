@@ -130,8 +130,9 @@ def filter_duration_for_capital(
       (need ev≥0.05 AND turnover≥15). >10 min hard reject.
     - **MEDIUM (< $5000)**: short-mostly. 1-30 min auto-allow. 30-120 min
       edge-conditional. 120-1440 min strong exception only. >24h reject.
-    - **LARGE (< $50000)**: balanced. 1-1440 min auto-allow. 1-7 days
-      edge-conditional. >7 days reject.
+    - **LARGE (< $50000)**: 1-1440 min (≤24h) auto-allow. LONG/VERY_LONG
+      hard reject (operator rule 2026-05-16 : "avant 50k minimum, aucun
+      trade >24h"). No edge override at this tier for long duration.
     - **HUGE (≥ $50000)**: institutional. All buckets allowed except
       VERY_LONG (>7 days) which needs strong edge.
 
@@ -193,17 +194,12 @@ def filter_duration_for_capital(
     # ====================================================================
     # LARGE ($5k-50k) — balanced: 1-1440 auto, 1-7d edge, >7d reject
     # ====================================================================
+    # Operator rule 2026-05-16 : "avant 50k minimum, aucun trade >24h".
+    # LARGE ($5k-50k) now caps at MEDIUM bucket (≤24h). LONG / VERY_LONG
+    # hard reject, no edge override.
     if cap < _CAPITAL_TIER_LARGE_MAX:
         if duration_bucket in ("ULTRA_SHORT", "VERY_SHORT", "SHORT", "MEDIUM"):
             return True, None
-        if duration_bucket == "LONG":  # 1-7 days
-            if _exceptional_override(
-                ev_lower_bound, capital_turnover_score,
-                min_ev=0.10, min_score=20.0,
-            ):
-                return True, None
-            return False, "CAPITAL_LOCK_TOO_LONG"
-        # VERY_LONG (>7 days) — reject at LARGE
         return False, "CAPITAL_LOCK_TOO_LONG"
 
     # ====================================================================
