@@ -46,7 +46,11 @@ class _FakePollingEngine:
         return {"executed": True, "rejected": False}
 
 
-def _fake_trade(tx_hash: str, wallet: str, ts: int = 1000) -> dict:
+def _fake_trade(tx_hash: str, wallet: str, ts: int | None = None) -> dict:
+    """Default ts = now (fresh) so age filter doesn't skip in non-age tests."""
+    import time as _time
+    if ts is None:
+        ts = int(_time.time())
     return {
         "transactionHash": tx_hash,
         "proxyWallet": wallet,
@@ -200,3 +204,78 @@ def test_trade_missing_id_is_skipped():
 
     asyncio.run(svc._fetch_and_process(_FakeClient()))
     assert svc.trades_dispatched == 0
+
+
+# === 2026-05-16 age filter tests ===
+
+def test_age_filter_fresh_trade_dispatched():
+    """Trade cohort fresh (age <= max_trade_age_s) must be dispatched."""
+    import time as _time
+    cohort = ["0xelite_a"]
+    engine = _FakePollingEngine(cohort)
+    svc = StreamPullService(engine, interval_s=1, limit=100, max_trade_age_s=90)
+
+    now = int(_time.time())
+    trade = _fake_trade("tx_fresh", "0xelite_a", ts=now - 10)  # 10s old
+
+    class _FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return [trade]
+
+    class _FakeClient:
+        async def get(self, *a, **kw): return _FakeResp()
+
+    asyncio.run(svc._fetch_and_process(_FakeClient()))
+    assert svc.trades_dispatched == 1
+    assert svc.trades_skipped_too_old == 0
+
+
+def test_age_filter_old_trade_skipped():
+    """Trade cohort > max_trade_age_s must NOT be dispatched and counter increments."""
+    import time as _time
+    cohort = ["0xelite_a"]
+    engine = _FakePollingEngine(cohort)
+    svc = StreamPullService(engine, interval_s=1, limit=100, max_trade_age_s=90)
+
+    now = int(_time.time())
+    trade = _fake_trade("tx_old", "0xelite_a", ts=now - 300)  # 5 min old
+
+    class _FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return [trade]
+
+    class _FakeClient:
+        async def get(self, *a, **kw): return _FakeResp()
+
+    asyncio.run(svc._fetch_and_process(_FakeClient()))
+    assert svc.trades_dispatched == 0
+    assert svc.trades_skipped_too_old == 1
+    assert svc.last_skipped_too_old_age_s is not None
+    assert svc.last_skipped_too_old_age_s >= 290  # ~300s ago
+
+
+def test_age_filter_old_trade_outside_cohort_not_counted():
+    """Trade old AND hors cohort doit être skipped sans incrémenter trades_skipped_too_old
+    (= filtre cohort vient avant filtre age)."""
+    import time as _time
+    cohort = ["0xelite_a"]
+    engine = _FakePollingEngine(cohort)
+    svc = StreamPullService(engine, interval_s=1, limit=100, max_trade_age_s=90)
+
+    now = int(_time.time())
+    trade = _fake_trade("tx_old_other", "0xnot_in_cohort", ts=now - 300)
+
+    class _FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return [trade]
+
+    class _FakeClient:
+        async def get(self, *a, **kw): return _FakeResp()
+
+    asyncio.run(svc._fetch_and_process(_FakeClient()))
+    assert svc.trades_dispatched == 0
+    assert svc.trades_matched_cohort == 0
+    assert svc.trades_skipped_too_old == 0  # cohort filter first

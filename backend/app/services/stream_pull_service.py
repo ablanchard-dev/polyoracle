@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import deque
 from typing import Any, Optional
 
@@ -60,6 +61,10 @@ STREAM_URL = "https://data-api.polymarket.com/trades"
 STREAM_PULL_ENABLED = _env_bool("STREAM_PULL_ENABLED", False)
 DEFAULT_LIMIT = _env_int("STREAM_PULL_LIMIT", 1000)
 DEFAULT_INTERVAL_S = _env_int("STREAM_PULL_INTERVAL_S", 10)
+# Operator rule 2026-05-16 : skip trades older than this before dispatch.
+# Avoids polluting audit with STALE_SIGNAL_BACKFILL rejects. 90s aligns
+# with crypto-5min freshness threshold per spec.md.
+DEFAULT_MAX_TRADE_AGE_S = _env_int("STREAM_PULL_MAX_TRADE_AGE_S", 90)
 HTTP_TIMEOUT_S = 8.0
 DEDUP_LRU_SIZE = 10_000
 
@@ -73,10 +78,12 @@ class StreamPullService:
         *,
         interval_s: int = DEFAULT_INTERVAL_S,
         limit: int = DEFAULT_LIMIT,
+        max_trade_age_s: int = DEFAULT_MAX_TRADE_AGE_S,
     ) -> None:
         self.polling_engine = polling_engine
         self.interval_s = interval_s
         self.limit = limit
+        self.max_trade_age_s = max_trade_age_s
         self._processed_ids: deque[str] = deque(maxlen=DEDUP_LRU_SIZE)
         self._processed_id_set: set[str] = set()
         self._stop_event = asyncio.Event()
@@ -87,6 +94,8 @@ class StreamPullService:
         self.trades_seen_total = 0
         self.trades_matched_cohort = 0
         self.trades_dedup_skipped = 0
+        self.trades_skipped_too_old = 0
+        self.last_skipped_too_old_age_s: Optional[int] = None
         self.trades_dispatched = 0
         self.paper_executed = 0
         self.last_cycle_at: Optional[float] = None
@@ -146,6 +155,12 @@ class StreamPullService:
         if not isinstance(trades, list):
             return
         self.trades_seen_total += len(trades)
+        # Per-cycle counters for visibility into where dispatches land
+        cycle_matched = 0
+        cycle_dispatched = 0
+        cycle_executed = 0
+        cycle_rejected = 0
+        cycle_reasons: dict[str, int] = {}
 
         # Live-read cohort. Polling engine maintains it (refresh on weekly
         # reclass or post-apply). Take a snapshot to a set for O(1) lookup.
@@ -168,6 +183,18 @@ class StreamPullService:
             if not wallet or wallet not in cohort_set:
                 continue
             self.trades_matched_cohort += 1
+            cycle_matched += 1
+            # 2026-05-16 patch : age filter avant dispatch.
+            # Au-delà de max_trade_age_s, le pipeline rejette via
+            # STALE_SIGNAL_BACKFILL → waste CPU + DB. Skip propre ici.
+            trade_ts = int(trade.get("timestamp") or 0)
+            now_ts = int(time.time())
+            if trade_ts and (now_ts - trade_ts) > self.max_trade_age_s:
+                self.trades_skipped_too_old += 1
+                self.last_skipped_too_old_age_s = now_ts - trade_ts
+                self._processed_ids.append(tid)
+                self._processed_id_set.add(tid)
+                continue
             # Use the EXACT same normalizer + processor as per-wallet polling.
             normalized = self.polling_engine._raw_to_audit_input(trade, wallet)
             try:
@@ -175,6 +202,7 @@ class StreamPullService:
                     self.polling_engine._process_trade_in_session, normalized
                 )
                 self.trades_dispatched += 1
+                cycle_dispatched += 1
                 # Mirror polling counters for observability parity.
                 try:
                     self.polling_engine._trades_detected_session += 1
@@ -182,10 +210,15 @@ class StreamPullService:
                     pass
                 if result.get("executed"):
                     self.paper_executed += 1
+                    cycle_executed += 1
                     try:
                         self.polling_engine._paper_trades_session += 1
                     except Exception:
                         pass
+                else:
+                    cycle_rejected += 1
+                    reason = str(result.get("reason") or "UNKNOWN")[:64]
+                    cycle_reasons[reason] = cycle_reasons.get(reason, 0) + 1
             except Exception as exc:
                 logger.warning(
                     "stream_pull: process failed tid=%s wallet=%s err=%s",
@@ -201,6 +234,15 @@ class StreamPullService:
                     self._processed_id_set = set(self._processed_ids)
 
         self.last_cycle_at = t0
+        # Per-cycle log (WARN level so it's visible without INFO filter)
+        if cycle_matched > 0 or cycle_dispatched > 0:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.warning(
+                "stream_pull cycle: trades_seen=%d cohort_size=%d matched=%d "
+                "dispatched=%d executed=%d rejected=%d reasons=%s elapsed=%dms",
+                len(trades), len(cohort_set), cycle_matched, cycle_dispatched,
+                cycle_executed, cycle_rejected, cycle_reasons, elapsed_ms,
+            )
 
 
 _INSTANCE: Optional[StreamPullService] = None
