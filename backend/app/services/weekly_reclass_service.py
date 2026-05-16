@@ -76,6 +76,41 @@ DEMOTE_THRESHOLD_WIN_RATE: float = DEMOTE_ELITE_MIN_WIN_RATE
 # Backup retention
 BACKUP_RETENTION_DAYS: int = 30
 
+# 2026-05-16 — Edge decay auto-demote (spec.md règle 7 cascade étape 2).
+# Adds a ROLLING WR check on paper trade history. If a wallet's lifetime
+# stats still pass ELITE bar but its recent paper performance is decayed,
+# auto-demote at next daily cron pass. Safeguard : fallback to lifetime-only
+# check when paper sample < ROLLING_MIN_SAMPLE (= fresh wallets not tradés
+# assez par bot pour avoir un signal rolling fiable).
+ROLLING_RECENT_N: int = 30
+ROLLING_MIN_WR_FOR_ELITE: float = 0.70  # below this on recent N = edge decay
+ROLLING_MIN_SAMPLE: int = 30  # need ≥N closed paper trades to apply check
+
+
+def _compute_rolling_paper_wr(session, address: str, n: int = ROLLING_RECENT_N) -> tuple[int, float]:
+    """Return (n_closed_sample, win_rate) for last N closed paper trades.
+
+    Used by _evaluate_for_demotion to detect edge decay on ELITE wallets
+    whose lifetime stats still look fine but recent paper performance is
+    degraded. Returns (0, 0.0) when paper sample is empty.
+    """
+    try:
+        from app.models.trade import PaperTrade
+        from sqlmodel import select as _select
+        rows = list(session.exec(
+            _select(PaperTrade)
+            .where(PaperTrade.wallet_address == address)
+            .where(PaperTrade.status == "closed")
+            .order_by(PaperTrade.closed_at.desc())
+            .limit(n)
+        ))
+        if not rows:
+            return (0, 0.0)
+        wins = sum(1 for r in rows if (r.realized_pnl or 0) > 0)
+        return (len(rows), wins / len(rows))
+    except Exception:
+        return (0, 0.0)
+
 
 @dataclass
 class ReclassDecision:
@@ -193,33 +228,49 @@ def _evaluate_for_promotion(row, current_status: str) -> Optional[ReclassDecisio
     return None
 
 
-def _evaluate_for_demotion(row, current_status: str) -> Optional[ReclassDecision]:
+def _evaluate_for_demotion(row, current_status: str, session=None) -> Optional[ReclassDecision]:
     """Apply demotion criteria with hysteresis (looser than promotion to
     prevent flapping ELITE↔STRONG).
 
     2026-05-09 — B1 fix: use REAL sample (W+L confirmés), not resolved_markets_traded.
+    2026-05-16 — Edge decay check : if session provided, also check rolling paper
+    WR. Lifetime-OK ELITE with rolling_30 WR < ROLLING_MIN_WR_FOR_ELITE on sample
+    ≥ ROLLING_MIN_SAMPLE → auto-demote ELITE→STRONG (spec.md règle 7 cascade
+    étape 2 'edge decay'). Safeguard : sample < threshold = fallback lifetime only.
     """
     resolved = int((row.resolved_winning_markets or 0) + (row.resolved_losing_markets or 0))
     win_rate = float(row.resolved_market_win_rate or 0)
 
     if current_status == "ELITE":
-        if (
+        lifetime_fail = (
             resolved < DEMOTE_ELITE_MIN_RESOLVED
             or win_rate < DEMOTE_ELITE_MIN_WIN_RATE
-        ):
-            # Where do we demote to? STRONG if it still meets STRONG bar,
-            # else DROPPED.
+        )
+        # 2026-05-16 rolling edge decay check (only if session available)
+        rolling_fail = False
+        rolling_reason = ""
+        if session is not None and not lifetime_fail:
+            rolling_n, rolling_wr = _compute_rolling_paper_wr(session, row.address)
+            if rolling_n >= ROLLING_MIN_SAMPLE and rolling_wr < ROLLING_MIN_WR_FOR_ELITE:
+                rolling_fail = True
+                rolling_reason = f"rolling_{rolling_n}_wr={rolling_wr:.3f} < {ROLLING_MIN_WR_FOR_ELITE}"
+
+        if lifetime_fail or rolling_fail:
             new_status = (
                 "STRONG"
                 if resolved >= STRONG_MIN_RESOLVED_MARKETS
                 and win_rate >= STRONG_MIN_WIN_RATE
                 else "DROPPED"
             )
+            if lifetime_fail:
+                reason = f"failed ELITE bar (resolved={resolved}, win={win_rate:.3f})"
+            else:
+                reason = f"edge_decay {rolling_reason} (lifetime {resolved}/{win_rate:.3f} OK)"
             return ReclassDecision(
                 address=row.address,
                 previous_status="ELITE",
                 new_status=new_status,
-                reason=f"failed ELITE bar (resolved={resolved}, win={win_rate:.3f})",
+                reason=reason,
                 composite_score=float(row.composite_score or 0),
                 resolved_markets=resolved,
                 win_rate=win_rate,
@@ -315,7 +366,7 @@ def run_weekly_reclass(
                     row.candidate_status = promote.new_status
                     session.add(row)
                 continue
-            demote = _evaluate_for_demotion(row, row.candidate_status or "")
+            demote = _evaluate_for_demotion(row, row.candidate_status or "", session=session)
             if demote is not None:
                 result.demoted.append(demote)
                 if not dry_run:

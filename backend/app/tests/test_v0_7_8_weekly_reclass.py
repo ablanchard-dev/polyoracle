@@ -27,8 +27,11 @@ from app.services.weekly_reclass_service import (
     ELITE_MIN_COMPOSITE_SCORE,
     ELITE_MIN_RESOLVED_MARKETS,
     ELITE_MIN_WIN_RATE,
+    ROLLING_MIN_SAMPLE,
+    ROLLING_MIN_WR_FOR_ELITE,
     ReclassResult,
     _backup_db,
+    _compute_rolling_paper_wr,
     _evaluate_for_demotion,
     _evaluate_for_promotion,
     _prune_old_backups,
@@ -385,3 +388,138 @@ def test_reclass_summary_md_includes_metrics():
     assert "59" in md
     assert "68" in md
     assert "Cohort" in md
+
+
+# === 2026-05-16 — Edge decay rolling check tests ===
+# spec.md règle 7 cascade étape 2 : auto-demote ELITE en edge decay.
+
+def _make_elite_row(addr: str) -> MarketFirstWalletRecord:
+    """ELITE with strong lifetime stats (W+L=120, WR=0.92)."""
+    return MarketFirstWalletRecord(
+        address=addr,
+        candidate_status="ELITE",
+        composite_score=92.0,
+        resolved_markets_traded=120,
+        resolved_winning_markets=110,
+        resolved_losing_markets=10,
+        resolved_market_win_rate=0.916,
+    )
+
+
+def _seed_paper_trades(session, wallet: str, n_total: int, n_wins: int) -> None:
+    """Insert n_total closed PaperTrade rows for wallet with n_wins wins."""
+    from app.models.trade import PaperTrade
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    for i in range(n_total):
+        pnl = 0.05 if i < n_wins else -0.02
+        pt = PaperTrade(
+            id=f"pt-{wallet[:8]}-{i:04d}",
+            market_id=f"market-{i}",
+            outcome="Yes",
+            side="BUY",
+            quantity=1.0,
+            average_price=0.5,
+            fees=0.001,
+            slippage=0.0,
+            realized_pnl=pnl,
+            status="closed",
+            opened_at=now - timedelta(minutes=10 + i),
+            closed_at=now - timedelta(minutes=5 + i),
+            wallet_address=wallet,
+            notional_usd=0.5,
+            auto=True,
+        )
+        session.add(pt)
+    session.commit()
+
+
+def test_rolling_wr_empty_paper_returns_zero(session_with_db):
+    """No paper trade history → (0, 0.0). Fallback comportement existant."""
+    session, _ = session_with_db
+    n, wr = _compute_rolling_paper_wr(session, "0xnobody")
+    assert n == 0
+    assert wr == 0.0
+
+
+def test_rolling_wr_fresh_wallets_returns_actual_count(session_with_db):
+    """Wallet with 10 paper trades, 9 wins → (10, 0.90)."""
+    session, _ = session_with_db
+    _seed_paper_trades(session, "0xtestrolling", n_total=10, n_wins=9)
+    n, wr = _compute_rolling_paper_wr(session, "0xtestrolling")
+    assert n == 10
+    assert wr == 0.9
+
+
+def test_evaluate_demotion_no_session_lifetime_only(session_with_db):
+    """Without session, _evaluate_for_demotion checks lifetime ONLY
+    (= comportement legacy preserved)."""
+    row = _make_elite_row("0xelite_legacy")
+    result = _evaluate_for_demotion(row, "ELITE")
+    assert result is None
+
+
+def test_evaluate_demotion_with_session_lifetime_ok_paper_empty(session_with_db):
+    """Lifetime OK + session provided + 0 paper trades → no demotion
+    (safeguard fallback : insufficient sample)."""
+    session, _ = session_with_db
+    row = _make_elite_row("0xelite_fresh")
+    session.add(row)
+    session.commit()
+    result = _evaluate_for_demotion(row, "ELITE", session=session)
+    assert result is None
+
+
+def test_evaluate_demotion_rolling_decay_triggers_auto_demote(session_with_db):
+    """Lifetime OK + rolling_30 WR < 0.70 + sample ≥30 → auto-demote ELITE→STRONG.
+    C'est le fix doctrinal 2026-05-16."""
+    session, _ = session_with_db
+    addr = "0xelite_decayed"
+    row = _make_elite_row(addr)
+    session.add(row)
+    _seed_paper_trades(session, addr, n_total=30, n_wins=15)  # 50% WR rolling
+    result = _evaluate_for_demotion(row, "ELITE", session=session)
+    assert result is not None
+    assert result.new_status == "STRONG"
+    assert "edge_decay" in result.reason
+    assert "rolling_30_wr=0.500" in result.reason
+
+
+def test_evaluate_demotion_rolling_just_above_threshold_no_demote(session_with_db):
+    """Rolling_30 WR = 0.733 (≥ 0.70 threshold) → no auto-demote."""
+    session, _ = session_with_db
+    addr = "0xelite_borderline_ok"
+    row = _make_elite_row(addr)
+    session.add(row)
+    _seed_paper_trades(session, addr, n_total=30, n_wins=22)  # 22/30 = 0.733
+    result = _evaluate_for_demotion(row, "ELITE", session=session)
+    assert result is None
+
+
+def test_evaluate_demotion_sample_below_threshold_no_action(session_with_db):
+    """Lifetime OK + 20 paper trades all losses (sample <30) → no demote
+    (safeguard : insufficient sample)."""
+    session, _ = session_with_db
+    addr = "0xelite_low_sample"
+    row = _make_elite_row(addr)
+    session.add(row)
+    _seed_paper_trades(session, addr, n_total=20, n_wins=5)  # 25% WR but <30 sample
+    result = _evaluate_for_demotion(row, "ELITE", session=session)
+    assert result is None
+
+
+def test_evaluate_demotion_lifetime_fail_still_demotes(session_with_db):
+    """Lifetime fail = original behavior preserved, regardless of rolling."""
+    session, _ = session_with_db
+    row = MarketFirstWalletRecord(
+        address="0xelite_lifetime_fail",
+        candidate_status="ELITE",
+        composite_score=70.0,
+        resolved_markets_traded=80,
+        resolved_winning_markets=60,
+        resolved_losing_markets=20,
+        resolved_market_win_rate=0.75,
+    )
+    result = _evaluate_for_demotion(row, "ELITE", session=session)
+    assert result is not None
+    assert "failed ELITE bar" in result.reason
