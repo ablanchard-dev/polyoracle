@@ -363,7 +363,7 @@ def test_invariant_6_strong_filtered_at_small_capital(capital_eur, strong_should
     # LARGE ($5000-50000) — up to MEDIUM auto, LONG edge-conditional
     (5000, "ULTRA_SHORT", True),
     (5000, "MEDIUM", True),
-    (5000, "LONG", True),         # ev=0.10 turn=20 → accepts at LARGE
+    (5000, "LONG", False),        # 2026-05-16 operator rule : no LONG <50k = hard reject (was edge-conditional)
     (5000, "VERY_LONG", False),
     # HUGE (≥$50k) — all auto except VERY_LONG (needs strong)
     (50000, "ULTRA_SHORT", True),
