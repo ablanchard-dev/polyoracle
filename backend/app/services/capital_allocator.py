@@ -333,32 +333,33 @@ _NONE = frozenset()
 
 
 CAPITAL_TIER_RULES: list[dict[str, Any]] = [
-    # 2026-05-09 op decision: doubled max_pos and bumped exposure to push cadence
-    # under PnL ramp. NANO 75% / TINY 80% / MICRO+SMALL 80% / progressive 90→95% above.
-    # < $200      NANO        ELITE GOLD+SILVER           max_pos 24  expo 75%
-    _tier("NANO",   200.0,    _GOLD_SILVER, _NONE,   24,  0.75),
-    # $200-249    TINY                                    max_pos 30  expo 80%
-    _tier("TINY",   250.0,    _GOLD_SILVER, _NONE,   30,  0.80),
-    # $250-499    MICRO                                   max_pos 40  expo 80%
-    _tier("MICRO",  500.0,    _GOLD_SILVER, _NONE,   40,  0.80),
-    # $500-999    SMALL                                   max_pos 60  expo 80%
-    _tier("SMALL",  1000.0,   _GOLD_SILVER, _NONE,   60,  0.80),
-    # $1k-1.99k   MEDIUM      ELITE GOLD+SILVER, no STRONG max_pos 90  expo 90%
-    _tier("MEDIUM", 2000.0,   _GOLD_SILVER, _NONE,   90,  0.90),
-    # $2k-3.99k   LARGE                                   max_pos 130 expo 92%
-    _tier("LARGE",  4000.0,   _GOLD_SILVER, _NONE,   130, 0.92),
-    # $4k-7.99k   XL                                      max_pos 180 expo 93%
-    _tier("XL",     8000.0,   _GOLD_SILVER, _NONE,   180, 0.93),
-    # $8k-9.99k   XXL                                     max_pos 240 expo 94%
-    _tier("XXL",    10000.0,  _GOLD_SILVER, _NONE,   240, 0.94),
-    # ≥$10k pivot ELITE_OPEN  + ELITE BRONZE + STRONG GOLD overflow  max_pos 320 expo 95%
-    _tier("ELITE_OPEN", 32000.0, _ALL_BUCKETS, _GOLD, 320, 0.95),
-    # $32k-63.99k GIGA                                    max_pos 480 expo 95%
-    _tier("GIGA",   64000.0,  _ALL_BUCKETS, _GOLD,   480, 0.95),
-    # $64k-127.99k HUGE       all ELITE + STRONG GOLD     max_pos 640 expo 95%
-    _tier("HUGE",   128000.0, _ALL_BUCKETS, _GOLD,   640, 0.95),
-    # ≥$128k       INST       all ELITE + STRONG GOLD     max_pos 800 expo 95%
-    _tier("INST",   float("inf"), _ALL_BUCKETS, _GOLD, 800, 0.95),
+    # 2026-05-16 op decision: bumped max_pos ~×1.5-1.67 across all tiers.
+    # NANO measured at 102% slot utilization with 98.5% capital idle → cap headroom OK.
+    # Expo% unchanged (controls sizing × max_pos product, allocator caps individual size).
+    # < $200      NANO        ELITE GOLD+SILVER           max_pos 40  expo 75%
+    _tier("NANO",   200.0,    _GOLD_SILVER, _NONE,   40,  0.75),
+    # $200-249    TINY                                    max_pos 50  expo 80%
+    _tier("TINY",   250.0,    _GOLD_SILVER, _NONE,   50,  0.80),
+    # $250-499    MICRO                                   max_pos 65  expo 80%
+    _tier("MICRO",  500.0,    _GOLD_SILVER, _NONE,   65,  0.80),
+    # $500-999    SMALL                                   max_pos 100 expo 80%
+    _tier("SMALL",  1000.0,   _GOLD_SILVER, _NONE,   100, 0.80),
+    # $1k-1.99k   MEDIUM      ELITE GOLD+SILVER, no STRONG max_pos 150 expo 90%
+    _tier("MEDIUM", 2000.0,   _GOLD_SILVER, _NONE,   150, 0.90),
+    # $2k-3.99k   LARGE                                   max_pos 210 expo 92%
+    _tier("LARGE",  4000.0,   _GOLD_SILVER, _NONE,   210, 0.92),
+    # $4k-7.99k   XL                                      max_pos 290 expo 93%
+    _tier("XL",     8000.0,   _GOLD_SILVER, _NONE,   290, 0.93),
+    # $8k-9.99k   XXL                                     max_pos 380 expo 94%
+    _tier("XXL",    10000.0,  _GOLD_SILVER, _NONE,   380, 0.94),
+    # ≥$10k pivot ELITE_OPEN  + ELITE BRONZE + STRONG GOLD overflow  max_pos 500 expo 95%
+    _tier("ELITE_OPEN", 32000.0, _ALL_BUCKETS, _GOLD, 500, 0.95),
+    # $32k-63.99k GIGA                                    max_pos 720 expo 95%
+    _tier("GIGA",   64000.0,  _ALL_BUCKETS, _GOLD,   720, 0.95),
+    # $64k-127.99k HUGE       all ELITE + STRONG GOLD     max_pos 960 expo 95%
+    _tier("HUGE",   128000.0, _ALL_BUCKETS, _GOLD,   960, 0.95),
+    # ≥$128k       INST       all ELITE + STRONG GOLD     max_pos 1200 expo 95%
+    _tier("INST",   float("inf"), _ALL_BUCKETS, _GOLD, 1200, 0.95),
 ]
 
 
