@@ -290,3 +290,36 @@ def test_no_capital_param_back_compat(tmp_path):
         strong_count = sum(1 for a in cohort if "strong" in a)
         assert elite_count > 0
         assert strong_count > 0
+
+
+def test_mfwr_first_new_elite_not_in_csv_still_polled(tmp_path):
+    """2026-05-16 bug fix : MFWR = source of truth runtime.
+
+    Before this fix, load_cohort intersected MFWR ELITE with the legacy
+    `validated_paper_universe_latest.csv`. Any wallet promoted to ELITE
+    in MFWR but NOT in the stale CSV was invisible to the polling loop
+    (= apply ELITE inutile pour runtime).
+
+    After fix : if MFWR has rows, MFWR alone defines the cohort. CSV
+    only used as fallback when MFWR empty.
+    """
+    eng = _engine()
+    with Session(eng) as session:
+        seeded = _seed_mfwr(session)
+        # Build CSV WITHOUT the GOLD ELITE addresses (= simulate stale CSV
+        # legacy v0.5.4 that doesn't include freshly promoted wallets).
+        addresses_in_csv = [r.address for r in seeded if not r.address.startswith("0xgold_")]
+        csv = _csv_path(tmp_path, addresses_in_csv)
+
+        cohort = WalletPollingEngine.load_cohort(
+            path=csv, session=session, capital_total=108.0,  # NANO tier
+        )
+
+        # GOLD wallets (0xgold_*) are MFWR ELITE GOLD but NOT in CSV.
+        # With the fix, they must still be in cohort (MFWR = source of truth).
+        new_elite_in_cohort = [a for a in cohort if a.startswith("0xgold_")]
+        assert len(new_elite_in_cohort) > 0, (
+            "MFWR ELITE GOLD wallets must be in cohort even if absent from CSV "
+            "(MFWR = source of truth post-2026-05-16). "
+            f"cohort={cohort} csv_addresses={addresses_in_csv[:3]}..."
+        )

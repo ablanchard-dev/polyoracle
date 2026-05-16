@@ -395,13 +395,20 @@ class WalletPollingEngine:
                 )
                 return cohort_csv
 
-            # Intersect csv cohort with priority-sorted MFWR. Preserve MFWR order.
+            # 2026-05-16 P6 fix : MFWR = source of truth runtime.
+            # AVANT : cohort = MFWR ∩ CSV → bug, toutes nouvelles promotions
+            # invisibles polling tant que CSV pas régénéré (CSV legacy v0.5.4).
+            # APRÈS : cohort = MFWR (filtré par tier + sorted by priority).
+            # CSV ne sert plus que de fallback si MFWR vide (ligne 391+).
+            cohort = tradable_ordered
             csv_set = {a.lower() for a in cohort_csv}
-            cohort = [a for a in tradable_ordered if a in csv_set]
+            n_only_mfwr = sum(1 for a in cohort if a not in csv_set)
+            n_csv_orphan = len(csv_set - set(cohort))
             logger.info(
-                "polling cohort (P6): csv=%d MFWR_priority=%d intersect=%d tier=%s allowed=%s",
-                len(cohort_csv), len(tradable_ordered), len(cohort),
-                tier_name, allowed_statuses,
+                "polling cohort (P6 MFWR-first): mfwr=%d "
+                "(new_not_in_csv=%d csv_orphans=%d) csv=%d tier=%s allowed=%s",
+                len(cohort), n_only_mfwr, n_csv_orphan,
+                len(cohort_csv), tier_name, allowed_statuses,
             )
             return cohort
         except Exception as exc:  # pragma: no cover — DB unavailable in tests
