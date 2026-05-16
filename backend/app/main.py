@@ -190,6 +190,36 @@ async def on_startup() -> None:
             type(_bootexc2).__name__, _bootexc2,
         )
 
+    # Stream-pull service (2026-05-16) — batched /trades?limit=1000 polling
+    # in parallel of per-wallet polling. Feature-flagged via
+    # STREAM_PULL_ENABLED env. Doctrine : coexiste avec polling per-wallet
+    # (= redondance / fallback). N'altère ni audit, ni gates, ni cohort.
+    try:
+        from app.services.stream_pull_service import (
+            STREAM_PULL_ENABLED,
+            init_stream_pull_service,
+        )
+        if STREAM_PULL_ENABLED:
+            from app.services.wallet_polling_engine import WalletPollingEngine
+            _engine = WalletPollingEngine.instance()
+            _stream = init_stream_pull_service(_engine)
+            await _stream.start()
+            import logging
+            logging.getLogger(__name__).info(
+                "stream_pull: enabled via STREAM_PULL_ENABLED=true"
+            )
+        else:
+            import logging
+            logging.getLogger(__name__).info(
+                "stream_pull: disabled (STREAM_PULL_ENABLED=false)"
+            )
+    except Exception as _bootexc3:
+        import logging
+        logging.getLogger(__name__).warning(
+            "stream_pull worker failed to launch: %s: %s",
+            type(_bootexc3).__name__, _bootexc3,
+        )
+
 
 app.include_router(health.router)
 app.include_router(markets.router)
