@@ -20,6 +20,47 @@ from app.database import get_session
 router = APIRouter(prefix="/observability", tags=["observability"])
 
 
+@router.get("/stream-pull")
+def stream_pull_status() -> dict[str, Any]:
+    """Stream-pull service runtime counters. Returns {enabled: False, ...}
+    if service not initialized (e.g. STREAM_PULL_ENABLED=false at boot)."""
+    try:
+        from app.services.stream_pull_service import (
+            STREAM_PULL_ENABLED,
+            get_stream_pull_service,
+        )
+        svc = get_stream_pull_service()
+        if svc is None:
+            return {
+                "enabled_flag": STREAM_PULL_ENABLED,
+                "instance": None,
+                "note": "service not initialized (singleton is None)",
+            }
+        # Get cohort_size live for context
+        try:
+            cohort_size = len(svc.polling_engine._cohort or [])
+        except Exception:
+            cohort_size = -1
+        return {
+            "enabled_flag": STREAM_PULL_ENABLED,
+            "running": svc.is_running(),
+            "interval_s": svc.interval_s,
+            "limit": svc.limit,
+            "cohort_size": cohort_size,
+            "cycles_completed": svc.cycles_completed,
+            "cycles_failed": svc.cycles_failed,
+            "trades_seen_total": svc.trades_seen_total,
+            "trades_matched_cohort": svc.trades_matched_cohort,
+            "trades_dedup_skipped": svc.trades_dedup_skipped,
+            "trades_dispatched": svc.trades_dispatched,
+            "paper_executed": svc.paper_executed,
+            "last_cycle_at": svc.last_cycle_at,
+            "last_error": svc.last_error,
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @router.get("/utilization")
 def utilization_status(
     window_hours: float = 24.0,
