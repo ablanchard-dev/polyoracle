@@ -283,8 +283,15 @@ class SignalEngine:
 
     def _propose_size(self, audit: TradeAuditRecord) -> float:
         live_capital = self._live_capital()
-        copy_pct = self._copy_pct()
         max_risk = live_capital * self.settings.paper_max_risk_per_trade
+        # 2026-05-17 test: à ELITE_OPEN+ tier ($10k+), bypass source cap → R-based fixed.
+        # Permet de mesurer en paper si WR tient sur trades plus gros que source.
+        # À tier inférieur, garde copy-faithful (= preserve baseline data).
+        if live_capital >= 10000:
+            # Fixed R-based sizing à haut tier
+            return round(max_risk, 2)
+        # Lower tiers : copy faithful proportionnel
+        copy_pct = self._copy_pct()
         liquidity_cap = max(0.0, audit.notional_usd * copy_pct)
         return round(min(max_risk, liquidity_cap or max_risk), 2)
 
