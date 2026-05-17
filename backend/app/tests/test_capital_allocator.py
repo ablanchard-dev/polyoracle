@@ -496,7 +496,7 @@ def test_preset_base_live_loads():
     p = get_preset("BASE_LIVE")
     assert p.live_allowed is True
     assert p.min_ev_lb == 0.05
-    assert p.min_stake == 5.0
+    assert p.min_stake == 1.0
     # P0.5 (Round 8, 2026-05-12): raised 0.70 → 0.95 so CAPITAL_TIER_RULES
     # ladder (75-95%) actually takes effect via min(base, tier_cap)=tier_cap.
     assert p.max_total_exposure == 0.95
@@ -534,7 +534,7 @@ def test_dynamic_thresholds_at_50_euros_smalltier_elite_only():
     )
     eff = compute_dynamic_thresholds(50.0, base)
     assert eff.allowed_tiers == frozenset({"ELITE"})  # NANO = ELITE only (12-tier 2026-05-09)
-    assert eff.max_open_positions == 24  # NANO cap (12-tier 2026-05-09: was 12)
+    assert eff.max_open_positions == 40  # NANO cap (12-tier 2026-05-09: was 12)
 
 
 def test_dynamic_thresholds_at_500_usd_small_tier():
@@ -550,7 +550,7 @@ def test_dynamic_thresholds_at_500_usd_small_tier():
     eff = compute_dynamic_thresholds(500.0, base)
     # SMALL tier: STRONG NOT in allowed_tiers_intersect → intersected out
     assert eff.allowed_tiers == frozenset({"ELITE"})
-    assert eff.max_open_positions == 60  # SMALL cap (12-tier 2026-05-09: was 32)
+    assert eff.max_open_positions == 100  # SMALL cap (12-tier 2026-05-09: was 32)
 
 
 def test_dynamic_thresholds_at_5000_usd_xl_tier():
@@ -567,7 +567,7 @@ def test_dynamic_thresholds_at_5000_usd_xl_tier():
     eff = compute_dynamic_thresholds(5_000.0, base)
     # XL: STRONG NOT in allowed_tiers (12-tier 2026-05-09 — STRONG only at ELITE_OPEN+)
     assert eff.allowed_tiers == frozenset({"ELITE"})
-    assert eff.max_open_positions == 180  # XL cap (was 110)
+    assert eff.max_open_positions == 290  # XL cap (was 110)
 
 
 def test_dynamic_thresholds_at_60000_usd_giga_tier():
@@ -584,7 +584,7 @@ def test_dynamic_thresholds_at_60000_usd_giga_tier():
     eff = compute_dynamic_thresholds(60_000.0, base)
     # GIGA allows STRONG GOLD overflow
     assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
-    assert eff.max_open_positions == 480  # GIGA cap (was 300)
+    assert eff.max_open_positions == 600  # min(base=600, GIGA cap 720)
 
 
 def test_dynamic_thresholds_at_70000_usd_huge_tier():
@@ -601,7 +601,7 @@ def test_dynamic_thresholds_at_70000_usd_huge_tier():
     eff = compute_dynamic_thresholds(70_000.0, base)
     # HUGE keeps STRONG GOLD overflow (no preservation in 12-tier 2026-05-09)
     assert eff.allowed_tiers == frozenset({"ELITE", "STRONG"})
-    assert eff.max_open_positions == 640  # HUGE cap (was 400)
+    assert eff.max_open_positions == 800  # min(base=800, HUGE cap 960)
 
 
 def test_capital_aware_overrides_base_params_when_tighter():

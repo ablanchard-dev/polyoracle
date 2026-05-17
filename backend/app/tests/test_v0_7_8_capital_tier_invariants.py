@@ -363,7 +363,7 @@ def test_invariant_6_strong_filtered_at_small_capital(capital_eur, strong_should
     # LARGE ($5000-50000) — up to MEDIUM auto, LONG edge-conditional
     (5000, "ULTRA_SHORT", True),
     (5000, "MEDIUM", True),
-    (5000, "LONG", False),        # 2026-05-16 operator rule : no LONG <50k = hard reject (was edge-conditional)
+    (5000, "LONG", False),         # 2026-05-16 LARGE rejette LONG/VERY_LONG no override (cfe4227)
     (5000, "VERY_LONG", False),
     # HUGE (≥$50k) — all auto except VERY_LONG (needs strong)
     (50000, "ULTRA_SHORT", True),
@@ -450,7 +450,7 @@ def test_invariant_10_base_paper_preset_is_canonical():
     p = get_preset("BASE_PAPER")
     assert p.max_market_exposure == 0.05, "BASE_PAPER max_market_exposure must be 5%"
     assert p.max_wallet_exposure == 0.10, "BASE_PAPER max_wallet_exposure must be 10%"
-    assert p.min_stake == 5.0, "BASE_PAPER min_stake must be $5"
+    assert p.min_stake == 1.0, "BASE_PAPER min_stake must be $1 (bumped 2026-05-17 TRUE 2R)"
     assert p.risk_per_trade == 0.01, "BASE_PAPER risk_per_trade must be 1%"
     assert p.capital_aware_thresholds is True, (
         "BASE_PAPER must enable capital_aware_thresholds"

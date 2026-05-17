@@ -76,11 +76,12 @@ def test_paper_trade_1h_takes_precedence_over_24h():
 
 
 def test_estimate_budget_under_cap():
+    # v2 (2026-05-17): WARM default bumped 30s -> 60s
     b = estimate_lane_budget(cohort_size=733, hot_count=30, warm_count=150, cold_count=553)
     assert b["hot_cps"] == 3.0
-    assert b["warm_cps"] == 5.0
+    assert b["warm_cps"] == 2.5  # 150/60
     assert b["cold_cps"] == 4.61
-    assert b["total_cps"] == 12.61
+    assert b["total_cps"] == 10.11
     assert b["under_cap_15"] is True
 
 
@@ -94,6 +95,16 @@ def test_estimate_budget_over_cap():
 def test_estimate_budget_zero_hot():
     b = estimate_lane_budget(cohort_size=733, hot_count=0, warm_count=180, cold_count=553)
     assert b["hot_cps"] == 0.0
+    assert b["under_cap_15"] is True
+
+
+def test_v2_realistic_post_cap_under_budget():
+    """Real-world post-CAP scenario: HOT 40 / WARM 419 / COLD 288 = 13.4 c/s."""
+    b = estimate_lane_budget(cohort_size=747, hot_count=40, warm_count=419, cold_count=288)
+    assert b["hot_cps"] == 4.0
+    assert b["warm_cps"] == 6.98
+    assert b["cold_cps"] == 2.4
+    assert b["total_cps"] == 13.38
     assert b["under_cap_15"] is True
 
 

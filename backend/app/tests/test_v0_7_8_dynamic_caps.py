@@ -286,30 +286,30 @@ def test_max_open_positions_scales_per_capital_12tier():
     if p.max_open_positions is not None:
         assert p.max_open_positions != 15, "legacy max_open_positions=15"
     # NANO (<$200): 24
-    assert compute_dynamic_thresholds(54.0, p).max_open_positions == 24
-    assert compute_dynamic_thresholds(180.0, p).max_open_positions == 24
+    assert compute_dynamic_thresholds(54.0, p).max_open_positions == 40
+    assert compute_dynamic_thresholds(180.0, p).max_open_positions == 40
     # TINY ($200-249): 30
-    assert compute_dynamic_thresholds(220.0, p).max_open_positions == 30
+    assert compute_dynamic_thresholds(220.0, p).max_open_positions == 50
     # MICRO ($250-499): 40
-    assert compute_dynamic_thresholds(400.0, p).max_open_positions == 40
+    assert compute_dynamic_thresholds(400.0, p).max_open_positions == 65
     # SMALL ($500-999): 60
-    assert compute_dynamic_thresholds(700.0, p).max_open_positions == 60
+    assert compute_dynamic_thresholds(700.0, p).max_open_positions == 100
     # MEDIUM ($1k-1.99k): 90
-    assert compute_dynamic_thresholds(1500.0, p).max_open_positions == 90
+    assert compute_dynamic_thresholds(1500.0, p).max_open_positions == 150
     # LARGE ($2k-3.99k): 130
-    assert compute_dynamic_thresholds(3000.0, p).max_open_positions == 130
+    assert compute_dynamic_thresholds(3000.0, p).max_open_positions == 210
     # XL ($4k-7.99k): 180
-    assert compute_dynamic_thresholds(5000.0, p).max_open_positions == 180
+    assert compute_dynamic_thresholds(5000.0, p).max_open_positions == 290
     # XXL ($8k-9.99k): 240
-    assert compute_dynamic_thresholds(9000.0, p).max_open_positions == 240
+    assert compute_dynamic_thresholds(9000.0, p).max_open_positions == 380
     # ELITE_OPEN ($10k-31.99k): 320
-    assert compute_dynamic_thresholds(15_000.0, p).max_open_positions == 320
+    assert compute_dynamic_thresholds(15_000.0, p).max_open_positions == 500
     # GIGA ($32k-63.99k): 480
-    assert compute_dynamic_thresholds(40_000.0, p).max_open_positions == 480
+    assert compute_dynamic_thresholds(40_000.0, p).max_open_positions == 720
     # HUGE ($64k-127.99k): 640
-    assert compute_dynamic_thresholds(80_000.0, p).max_open_positions == 640
+    assert compute_dynamic_thresholds(80_000.0, p).max_open_positions == 960
     # INST (≥$128k): 800
-    assert compute_dynamic_thresholds(150_000.0, p).max_open_positions == 800
+    assert compute_dynamic_thresholds(150_000.0, p).max_open_positions == 1200
 
 
 # ---------------- 8 — cap decreases as capital grows ----------------

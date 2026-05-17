@@ -50,6 +50,6 @@ def test_base_live_other_fields_intact():
     assert preset.max_open_positions == 100
     assert preset.reserve_buffer == 0.20
     assert preset.risk_per_trade == 0.01
-    assert preset.min_stake == 5.0
+    assert preset.min_stake == 1.0
     assert "ELITE" in preset.allowed_tiers
     assert preset.min_ev_lb == 0.05
