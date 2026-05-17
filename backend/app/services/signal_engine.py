@@ -172,7 +172,7 @@ class SignalEngine:
             decision=decision,
             wallets=None,
             cluster_id=cluster.id,
-            proposed_size_usd=round(min(self._live_capital() * self.settings.paper_max_risk_per_trade, cluster.notional_usd * self._copy_pct()), 2),
+            proposed_size_usd=self._compute_cluster_proposed_size(cluster),
             copyable_edge=score.copyable_edge / 100,
             notes=json.dumps(score.to_dict()),
         )
@@ -313,12 +313,21 @@ class SignalEngine:
         Le bot copie la taille source à 100% à TOUS tiers. Le sizing final
         est borné en aval par R-based (capital_allocator), min_stake (preset),
         et exposure cap. Pas de cap source-proportional anti-front-running.
-
-        Rationale : doctrine "même comportement paper/live" → pas de safeguard
-        arbitraire qui s'active selon tier. Les caps existants (R, min_stake,
-        exposure) sont suffisants et documentés.
         """
         return 1.00
+
+    def _compute_cluster_proposed_size(self, cluster) -> float:
+        """Cluster signal sizing : 2R upper bound, pas source-bound.
+        Allocator downstream applique R-based state machine + caps.
+        À haut tier ($10k+), bypass cluster source size (sinon caps à
+        source qui est typiquement small)."""
+        live_capital = self._live_capital()
+        max_risk_2r = live_capital * self.settings.paper_max_risk_per_trade * 2.0
+        if live_capital >= 10000:
+            return round(max_risk_2r, 2)
+        copy_pct = self._copy_pct()
+        liquidity_cap = max(0.0, (cluster.notional_usd or 0.0) * copy_pct)
+        return round(min(max_risk_2r, liquidity_cap or max_risk_2r), 2)
 
 
 def _orderbook_quality_to_score(quality: str) -> float:
