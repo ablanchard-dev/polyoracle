@@ -181,6 +181,7 @@ class RiskEngine:
         copy_delay_seconds: float = 0.0,
         price_deterioration: float = 0.0,
         total_exposure: float = 0.0,
+        capital_total: float | None = None,  # 2026-05-17 : live capital pour position_size
         market_exposure: float = 0.0,
         wallet_exposure: float = 0.0,
         open_positions_count: int = 0,
@@ -299,8 +300,11 @@ class RiskEngine:
         if copy_delay_seconds > 300 or price_deterioration > 0.05:
             return RiskDecision(False, "Late entry — price moved too much / delay too high", reason_code="LATE_ENTRY")
 
-        position_size = round(self.settings.paper_capital * profile.max_risk_per_trade, 2)
-        return RiskDecision(True, f"Risk checks passed ({profile.name})", position_size, reason_code=None, details={"profile": profile.name})
+        # 2026-05-17 — utiliser live capital (passé en param) au lieu de settings.paper_capital
+        # static. Permet au position_size de scaler avec le tier réel (NANO → ELITE_OPEN).
+        effective_capital = capital_total if capital_total is not None else self.settings.paper_capital
+        position_size = round(effective_capital * profile.max_risk_per_trade, 2)
+        return RiskDecision(True, f"Risk checks passed ({profile.name})", position_size, reason_code=None, details={"profile": profile.name, "capital_total": effective_capital})
 
     # ---------------- no-trade decision log ----------------
 

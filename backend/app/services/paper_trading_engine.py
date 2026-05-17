@@ -1606,6 +1606,7 @@ class PaperTradingEngine:
             open_positions_count=len(self.update_paper_positions()),
             daily_trades_count=self.daily_trade_count(),
             kill_switch_active=self._kill_switch_active(),
+            capital_total=float(self.paper_capital),  # 2026-05-17 live capital for position_size
         )
         if not decision.approved:
             risk.log_no_trade(
