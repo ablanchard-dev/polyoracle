@@ -28,7 +28,8 @@ BASE_PAPER:
   reserve_buffer: 0.05
   # Sizing
   risk_per_trade: 0.01
-  min_stake: 5.0
+  min_stake: 1.0                  # 2026-05-17 : was 5.0 → bloquait 2R/1R à NANO/TINY/MICRO.
+                                  # Maintenant min_stake = Polymarket floor ($1), R-mult respecté à tous tiers.
   # Quality gates
   allowed_tiers: ["ELITE", "STRONG"]
   min_ev_lb: 0.02
@@ -72,7 +73,7 @@ BASE_LIVE:
   max_open_positions: 100
   reserve_buffer: 0.20
   risk_per_trade: 0.01
-  min_stake: 5.0
+  min_stake: 1.0                  # 2026-05-17 : aligné BASE_PAPER, Polymarket floor $1, 2R/1R respecté à tous tiers
   allowed_tiers: ["ELITE", "STRONG"]
   min_ev_lb: 0.05
   min_copyable_edge: 0.25         # v0.7.2 B3 — was 0.50. Live keeps a stricter buffer than paper.

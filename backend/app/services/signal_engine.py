@@ -282,16 +282,15 @@ class SignalEngine:
         )
 
     def _propose_size(self, audit: TradeAuditRecord) -> float:
+        # 2026-05-17 : retourne 2R upper À TOUS TIERS (pas seulement $10k+).
+        # Le min downstream avec allocator_decision.sizing applique le vrai
+        # R-multiplier (state machine 2R win / 1R loss). PAS de copy_pct
+        # source-bound qui contournait le 2R/1R doctrine.
+        # NANO ($100): 2R=$2, allocator returns 2R($2) ou 1R($1) selon state.
+        # ELITE_OPEN ($10k): 2R=$200, allocator 2R($200) ou 1R($100).
         live_capital = self._live_capital()
-        # 2026-05-17 : retourne 2R = capital × risk_per_trade × 2 comme UPPER bound.
-        # Le min downstream avec allocator_decision.sizing applique le vrai R-multiplier
-        # (state machine 2R win / 1R loss). Avant : retournait 1R → capait allocator 2R à 1R.
         max_risk_2r = live_capital * self.settings.paper_max_risk_per_trade * 2.0
-        if live_capital >= 10000:
-            return round(max_risk_2r, 2)
-        copy_pct = self._copy_pct()
-        liquidity_cap = max(0.0, audit.notional_usd * copy_pct)
-        return round(min(max_risk_2r, liquidity_cap or max_risk_2r), 2)
+        return round(max_risk_2r, 2)
 
     def _live_capital(self) -> float:
         """Read live BotState.paper_capital (= effective capital after restart),
@@ -317,17 +316,12 @@ class SignalEngine:
         return 1.00
 
     def _compute_cluster_proposed_size(self, cluster) -> float:
-        """Cluster signal sizing : 2R upper bound, pas source-bound.
-        Allocator downstream applique R-based state machine + caps.
-        À haut tier ($10k+), bypass cluster source size (sinon caps à
-        source qui est typiquement small)."""
+        """Cluster signal sizing : 2R upper bound À TOUS TIERS.
+        Allocator downstream applique R-based state machine (2R win / 1R loss).
+        """
         live_capital = self._live_capital()
         max_risk_2r = live_capital * self.settings.paper_max_risk_per_trade * 2.0
-        if live_capital >= 10000:
-            return round(max_risk_2r, 2)
-        copy_pct = self._copy_pct()
-        liquidity_cap = max(0.0, (cluster.notional_usd or 0.0) * copy_pct)
-        return round(min(max_risk_2r, liquidity_cap or max_risk_2r), 2)
+        return round(max_risk_2r, 2)
 
 
 def _orderbook_quality_to_score(quality: str) -> float:
