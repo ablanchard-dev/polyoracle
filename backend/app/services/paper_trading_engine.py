@@ -1775,10 +1775,15 @@ class PaperTradingEngine:
                 "candidate_status": candidate_status,
                 "allocator": allocator_details,
             }
+        # 2026-05-17 : remove single-R cap (self.paper_capital × max_risk_per_trade)
+        # qui réduisait allocator 2R → 1R. Allocator est seul authority pour R-based
+        # sizing (state machine 2R win / 1R loss), avec safeguards :
+        # - min_stake floor (preset BASE_PAPER $5)
+        # - wallet/market exposure caps (compute_sizing line 1081)
+        # - max_total_exposure (allocator gate)
         size_usd = min(
             signal.proposed_size_usd or 0.0,
             decision.position_size,
-            self.paper_capital * active_profile.max_risk_per_trade,
             allocator_decision.sizing,
         )
         if size_usd <= 0:

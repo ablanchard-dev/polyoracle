@@ -300,10 +300,11 @@ class RiskEngine:
         if copy_delay_seconds > 300 or price_deterioration > 0.05:
             return RiskDecision(False, "Late entry — price moved too much / delay too high", reason_code="LATE_ENTRY")
 
-        # 2026-05-17 — utiliser live capital (passé en param) au lieu de settings.paper_capital
-        # static. Permet au position_size de scaler avec le tier réel (NANO → ELITE_OPEN).
+        # 2026-05-17 — utiliser live capital (param) + retourner 2R upper bound (= max
+        # possible sizing). Le min downstream avec allocator_decision.sizing applique
+        # le vrai R-multiplier (2R win / 1R loss state machine).
         effective_capital = capital_total if capital_total is not None else self.settings.paper_capital
-        position_size = round(effective_capital * profile.max_risk_per_trade, 2)
+        position_size = round(effective_capital * profile.max_risk_per_trade * 2.0, 2)  # 2R upper
         return RiskDecision(True, f"Risk checks passed ({profile.name})", position_size, reason_code=None, details={"profile": profile.name, "capital_total": effective_capital})
 
     # ---------------- no-trade decision log ----------------

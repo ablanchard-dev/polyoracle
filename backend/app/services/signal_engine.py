@@ -283,17 +283,15 @@ class SignalEngine:
 
     def _propose_size(self, audit: TradeAuditRecord) -> float:
         live_capital = self._live_capital()
-        max_risk = live_capital * self.settings.paper_max_risk_per_trade
-        # 2026-05-17 test: à ELITE_OPEN+ tier ($10k+), bypass source cap → R-based fixed.
-        # Permet de mesurer en paper si WR tient sur trades plus gros que source.
-        # À tier inférieur, garde copy-faithful (= preserve baseline data).
+        # 2026-05-17 : retourne 2R = capital × risk_per_trade × 2 comme UPPER bound.
+        # Le min downstream avec allocator_decision.sizing applique le vrai R-multiplier
+        # (state machine 2R win / 1R loss). Avant : retournait 1R → capait allocator 2R à 1R.
+        max_risk_2r = live_capital * self.settings.paper_max_risk_per_trade * 2.0
         if live_capital >= 10000:
-            # Fixed R-based sizing à haut tier
-            return round(max_risk, 2)
-        # Lower tiers : copy faithful proportionnel
+            return round(max_risk_2r, 2)
         copy_pct = self._copy_pct()
         liquidity_cap = max(0.0, audit.notional_usd * copy_pct)
-        return round(min(max_risk, liquidity_cap or max_risk), 2)
+        return round(min(max_risk_2r, liquidity_cap or max_risk_2r), 2)
 
     def _live_capital(self) -> float:
         """Read live BotState.paper_capital (= effective capital after restart),
