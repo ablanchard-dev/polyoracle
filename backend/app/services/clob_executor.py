@@ -160,19 +160,28 @@ class CLOBExecutor:
     # ------- L1 wallet init -------
 
     def _build_client(self) -> Any:
-        """Build py-clob-client. Lazy import to avoid hard dep when not used."""
+        """Build py-clob-client. Lazy import to avoid hard dep when not used.
+
+        V2 (POLY_1271 / Magic / Browser) requires `funder` param = deposit wallet
+        or proxy wallet address (NOT the EOA-derived address from PK).
+        For sig_type=0 (EOA direct), funder is derived from PK in _resolve_funder_address.
+        """
         if self._client is not None:
             return self._client
         if self.config.dry_run:
             self._client = _DryRunClient(self.config)
         else:
             from py_clob_client.client import ClobClient
-            self._client = ClobClient(
-                host=self.config.host,
-                key=self.config.private_key,
-                chain_id=self.config.chain_id,
-                signature_type=self.config.signature_type,
-            )
+            kwargs = {
+                "host": self.config.host,
+                "key": self.config.private_key,
+                "chain_id": self.config.chain_id,
+                "signature_type": self.config.signature_type,
+            }
+            # V2 / Magic / Browser need explicit funder (= deposit wallet / proxy wallet)
+            if self.config.signature_type in (1, 2, 3) and self.config.funder_address:
+                kwargs["funder"] = self.config.funder_address
+            self._client = ClobClient(**kwargs)
         return self._client
 
     def _resolve_funder_address(self) -> str:
@@ -235,7 +244,13 @@ class CLOBExecutor:
         return creds
 
     def initialize(self) -> "CLOBExecutor":
-        """Build client + ensure L2 creds. Call once at start."""
+        """Build client + ensure L2 creds. Call once at start.
+
+        Funder resolution :
+        - sig_type=0 (EOA direct) : funder = EOA address derived from PK
+        - sig_type=1/2/3 (proxy/V2) : funder MUST be passed in config (deposit wallet
+          or proxy wallet address). Cannot be derived from PK alone.
+        """
         self._build_client()
         self.ensure_api_credentials()
         # Re-apply creds for client (path differs in mock vs real)
@@ -247,7 +262,15 @@ class CLOBExecutor:
                 api_passphrase=self._api_creds["passphrase"],
             ))
         if not self.config.funder_address:
-            self.config.funder_address = self._resolve_funder_address()
+            if self.config.signature_type == 0:
+                # EOA direct : funder = EOA address derived from PK
+                self.config.funder_address = self._resolve_funder_address()
+            else:
+                # V2 / Magic / Browser : funder MUST come from config (e.g. deposit wallet)
+                raise ValueError(
+                    f"funder_address required for signature_type={self.config.signature_type} "
+                    f"(V2/proxy modes). Set POLYMARKET_DEPOSIT_WALLET or POLYMARKET_FUNDER in env."
+                )
         self._initialized = True
         return self
 
@@ -486,12 +509,29 @@ class _DryRunClient:
 
 def build_executor_from_env() -> CLOBExecutor | None:
     """Convenience factory reading from env vars. Returns None if PRIVATE_KEY
-    not set (= live mode disabled / not configured). Safe to call at startup."""
+    not set (= live mode disabled / not configured). Safe to call at startup.
+
+    V2 env vars supported (2026-05-17):
+      POLYMARKET_PRIVATE_KEY  — EOA controller PK (66 chars 0x-prefixed)
+      POLYMARKET_SIGNATURE_TYPE — 0 EOA / 1 Magic / 2 Browser / 3 POLY_1271 (V2 deposit wallet)
+      POLYMARKET_FUNDER — proxy wallet (sig_type=1/2) OR deposit wallet (sig_type=3)
+      POLYMARKET_DEPOSIT_WALLET — V2 deterministic address (same as FUNDER for sig_type=3)
+      POLYMARKET_CLOB_HOST — override default
+      POLYMARKET_CLOB_DRY_RUN — 1 to skip real network calls (tests)
+    """
     pk = os.environ.get("POLYMARKET_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
     if not pk:
         return None
+    sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "0"))
+    # For V2 (sig_type=3), prefer DEPOSIT_WALLET, fall back to FUNDER
+    if sig_type == 3:
+        funder = os.environ.get("POLYMARKET_DEPOSIT_WALLET") or os.environ.get("POLYMARKET_FUNDER")
+    else:
+        funder = os.environ.get("POLYMARKET_FUNDER")
     config = CLOBExecutorConfig(
         private_key=pk,
+        funder_address=funder,
+        signature_type=sig_type,
         host=os.environ.get("POLYMARKET_CLOB_HOST", DEFAULT_CLOB_HOST),
         dry_run=bool(int(os.environ.get("POLYMARKET_CLOB_DRY_RUN", "0"))),
     )
@@ -503,12 +543,26 @@ def status_payload() -> dict[str, Any]:
     pk_present = bool(
         os.environ.get("POLYMARKET_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
     )
+    sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "0"))
+    funder = (
+        os.environ.get("POLYMARKET_DEPOSIT_WALLET")
+        or os.environ.get("POLYMARKET_FUNDER")
+    )
+    api_keys_present = bool(
+        os.environ.get("POLYMARKET_API_KEY")
+        and os.environ.get("POLYMARKET_API_SECRET")
+        and os.environ.get("POLYMARKET_API_PASSPHRASE")
+    )
+    # For V2 (sig_type=3), funder is required
+    live_ready = bool(pk_present and (sig_type == 0 or funder))
     return {
         "configured": pk_present,
-        "live_ready": pk_present,  # full check requires init, this is preview
+        "live_ready": live_ready,
         "host": DEFAULT_CLOB_HOST,
         "chain_id": POLYGON_CHAIN_ID,
-        "signature_type": SIGNATURE_TYPE_EOA,
+        "signature_type": sig_type,
+        "funder_address_present": bool(funder),
+        "api_keys_present": api_keys_present,
         "creds_cache_exists": DEFAULT_CREDS_PATH.exists(),
         "dry_run": bool(int(os.environ.get("POLYMARKET_CLOB_DRY_RUN", "0"))),
     }
