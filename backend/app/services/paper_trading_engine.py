@@ -1887,6 +1887,47 @@ class PaperTradingEngine:
 
         # Use the LIVE price for sizing the position.
         quantity = size_usd / max(execution_price or 1, 0.01)
+
+        # 2026-05-17 — LIVE bridge : si LIVE_ENABLED=true, send vrai ordre CLOB.
+        # Sinon, paper comme avant. MÊME logique de décision en amont (signals,
+        # audit, cluster, R-sizing) — seule l'exécution change.
+        try:
+            from app.services.live_executor_bridge import decide_and_place_live
+            live_result = decide_and_place_live(
+                session=self.session,
+                market_id=signal.market_id,
+                outcome=signal.outcome,
+                side=side.upper(),
+                price=execution_price,
+                notional_usd=size_usd,
+                signal_id=signal.id,
+                wallet_address=audit_context.get("wallet"),
+            )
+        except Exception as _e:
+            # Bridge totally broken — log + fallback paper to not crash bot
+            try:
+                import logging as _lg
+                _lg.getLogger(__name__).error(f"live bridge error: {type(_e).__name__}: {_e}")
+            except Exception:
+                pass
+            live_result = {"mode": "paper", "success": True, "skip_reason": "BRIDGE_ERROR"}
+
+        if live_result.get("mode") == "skip":
+            # LIVE failed (rate limit, CLOB reject, token unresolvable). NE PAS
+            # fallback paper (= éviter divergence comptable paper/live).
+            return {
+                "executed": False,
+                "reason": f"LIVE_SKIP: {live_result.get('skip_reason')}",
+                "reason_code": "LIVE_REJECT",
+                "error": live_result.get("error"),
+            }
+
+        # Tag audit_data with live info (if any)
+        if live_result.get("mode") == "live":
+            _audit_data["live_executed"] = True
+            _audit_data["live_order_id"] = live_result.get("order_id")
+            _audit_data["live_fill_price"] = live_result.get("fill_price")
+
         trade = self.open_paper_position(
             market_id=signal.market_id,
             outcome=signal.outcome,
