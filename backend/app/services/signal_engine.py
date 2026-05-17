@@ -282,8 +282,33 @@ class SignalEngine:
         )
 
     def _propose_size(self, audit: TradeAuditRecord) -> float:
-        max_risk = self.settings.paper_capital * self.settings.paper_max_risk_per_trade
-        liquidity_cap = max(0.0, audit.notional_usd * 0.01)
+        # 2026-05-17 — capital-aware sizing : read live BotState.paper_capital
+        # (not static settings.paper_capital, which is config-frozen). Lets
+        # max_risk scale with effective capital tier (NANO → ELITE_OPEN).
+        try:
+            from app.models.bot_state import BotState
+            from sqlmodel import select
+            bs = self.session.exec(select(BotState)).first()
+            live_capital = float(bs.paper_capital) if bs and bs.paper_capital else self.settings.paper_capital
+        except Exception:
+            live_capital = self.settings.paper_capital
+        max_risk = live_capital * self.settings.paper_max_risk_per_trade
+
+        # 2026-05-17 — capital-aware copy_proportion : à NANO/SMALL on cap à 1%
+        # du trade source (anti-front-running). À MEDIUM+ on bump progressivement
+        # car notre bankroll absorbe l'impact. À ELITE_OPEN+ on autorise 100%
+        # (= mimic source size) car notre capital justifie la pleine exposure.
+        if live_capital >= 10000:    # ELITE_OPEN+
+            copy_pct = 1.00
+        elif live_capital >= 4000:    # XL+
+            copy_pct = 0.50
+        elif live_capital >= 1000:    # MEDIUM+
+            copy_pct = 0.20
+        elif live_capital >= 500:     # SMALL+
+            copy_pct = 0.05
+        else:                          # NANO/TINY/MICRO
+            copy_pct = 0.01
+        liquidity_cap = max(0.0, audit.notional_usd * copy_pct)
         return round(min(max_risk, liquidity_cap or max_risk), 2)
 
 
