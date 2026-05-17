@@ -299,7 +299,7 @@ class SignalEngine:
         of truth for sizing decisions in this engine.
         """
         try:
-            from app.models.bot_state import BotState
+            from app.models.bot import BotState
             from sqlmodel import select
             bs = self.session.exec(select(BotState)).first()
             if bs and bs.paper_capital:
