@@ -304,21 +304,16 @@ class SignalEngine:
         return float(self.settings.paper_capital)
 
     def _copy_pct(self) -> float:
-        """Capital-aware copy proportion : à NANO/SMALL on cap à 1% du trade
-        source (anti-front-running). À MEDIUM+ on bump progressivement car notre
-        bankroll absorbe l'impact. À ELITE_OPEN+ (≥$10k) on autorise 100%
-        (= mimic source size) car notre capital justifie la pleine exposure.
+        """2026-05-17 — copy_pct supprimé (per opérateur décision).
+        Le bot copie la taille source à 100% à TOUS tiers. Le sizing final
+        est borné en aval par R-based (capital_allocator), min_stake (preset),
+        et exposure cap. Pas de cap source-proportional anti-front-running.
+
+        Rationale : doctrine "même comportement paper/live" → pas de safeguard
+        arbitraire qui s'active selon tier. Les caps existants (R, min_stake,
+        exposure) sont suffisants et documentés.
         """
-        cap = self._live_capital()
-        if cap >= 10000:    # ELITE_OPEN+
-            return 1.00
-        if cap >= 4000:    # XL+
-            return 0.50
-        if cap >= 1000:    # MEDIUM+
-            return 0.20
-        if cap >= 500:     # SMALL+
-            return 0.05
-        return 0.01        # NANO/TINY/MICRO
+        return 1.00
 
 
 def _orderbook_quality_to_score(quality: str) -> float:
