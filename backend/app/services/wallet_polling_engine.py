@@ -1251,6 +1251,8 @@ class WalletPollingEngine:
                 interval_func=interval_func,
                 n_workers=n_workers,
             )
+            # Expose pool for observability endpoint
+            self._worker_pool = pool
 
             # Background tasks (NOT in workers): close-loops + DB counter +
             # lane refresh + heartbeat tick for watchdog.

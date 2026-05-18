@@ -20,6 +20,42 @@ from app.database import get_session
 router = APIRouter(prefix="/observability", tags=["observability"])
 
 
+@router.get("/workers")
+def workers_status() -> dict[str, Any]:
+    """P0-B workers pool stats — polls per lane, errors, queue size.
+
+    Returns the live WorkerPool.stats. Allows operator to verify WARM/COLD
+    wallets are actually being polled (item 3 of ALL-ELITES-SERVED audit)."""
+    try:
+        from app.services.wallet_polling_engine import WalletPollingEngine
+        from app.services import polling_workers as _pw
+        eng = WalletPollingEngine._instance
+        if eng is None:
+            return {"error": "engine instance is None"}
+        pool = getattr(eng, "_worker_pool", None)
+        if pool is None:
+            return {
+                "workers_enabled_flag": _pw.is_enabled(),
+                "pool": None,
+                "note": "workers not active (flag off OR engine on legacy loop)",
+            }
+        return {
+            "workers_enabled_flag": _pw.is_enabled(),
+            "n_workers": pool.n_workers,
+            "queue_size": pool.queue.size(),
+            "polls_done": pool.stats.get("polls_done", 0),
+            "errors": pool.stats.get("errors", 0),
+            "by_lane": pool.stats.get("by_lane", {}),
+            "cohort_size": len(eng._cohort or []),
+            "lane_distribution": {
+                lane: sum(1 for l in eng._wallet_lanes.values() if l == lane)
+                for lane in ("HOT", "WARM", "COLD")
+            } if hasattr(eng, "_wallet_lanes") else None,
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @router.get("/stream-pull")
 def stream_pull_status() -> dict[str, Any]:
     """Stream-pull service runtime counters. Returns {enabled: False, ...}
