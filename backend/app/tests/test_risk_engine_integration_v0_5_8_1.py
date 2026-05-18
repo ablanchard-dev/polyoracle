@@ -143,13 +143,20 @@ def test_5_late_entry_refuses(session: Session) -> None:
 
 
 def test_6_too_much_exposure_refuses(session: Session) -> None:
-    # Pre-seed 15 open positions to cap.
+    """P0-A2 (2026-05-18): position cap comes from capital tier, not profile.
+
+    Set NANO tier (capital=$100 → max_pos=40), seed 40 positions, expect 41st
+    to be rejected with TOO_MUCH_EXPOSURE / cap_source=tier."""
+    state = session.get(BotState, 1)
+    state.paper_capital = 100.0  # NANO tier → max_pos=40
+    session.add(state)
+    session.commit()
     eng = PaperTradingEngine(session)
-    for k in range(15):
+    for k in range(40):
         eng.open_paper_position(
             market_id=f"0xm{k}", outcome="Yes", side="BUY",
             quantity=10.0, price=0.5, spread=0.02,
-            signal_id=f"sig-{k}", wallet_address="0xelite", notional_usd=5.0, auto=True,
+            signal_id=f"sig-{k}", wallet_address="0xelite", notional_usd=0.5, auto=True,
             allocator_checked=True,
         )
     res = eng.maybe_auto_trade(_signal(sid="sig-test-overcap", market_id="0xmnew"),

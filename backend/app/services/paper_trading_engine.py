@@ -1685,6 +1685,7 @@ class PaperTradingEngine:
             daily_trades_count=self.daily_trade_count(),
             kill_switch_active=self._kill_switch_active(),
             capital_total=float(self.paper_capital),  # 2026-05-17 live capital for position_size
+            tier_max_positions=int(_cap_snapshot["max_positions_cap"]),  # P0-A2 2026-05-18 tier-dynamic cap
         )
         if not decision.approved:
             # P0-A : include capital snapshot in no-trade log for observability.

@@ -187,6 +187,7 @@ class RiskEngine:
         open_positions_count: int = 0,
         daily_trades_count: int = 0,
         kill_switch_active: bool = False,
+        tier_max_positions: int | None = None,
     ) -> RiskDecision:
         """Validate a paper trade against the active ``RiskModeProfile``.
 
@@ -224,12 +225,27 @@ class RiskEngine:
                 details={"confidence": win_rate_confidence},
             )
 
-        if profile.max_open_positions is not None and open_positions_count >= profile.max_open_positions:
+        # P0-A2 2026-05-18 — dynamic position cap from capital tier overrides
+        # the legacy profile.max_open_positions. The hardcoded AGGRESSIVE=15 was
+        # capping the bot at 15 positions while tier HUGE allows 960 — bot
+        # bloqué 1-in/1-out malgré effective_capital=$76k. Doctrine: capital
+        # tier governs max_pos; profile cap stays only as fallback when tier
+        # is not supplied (e.g. legacy callers, non-tier-aware tests).
+        profile_cap = profile.max_open_positions
+        final_pos_cap = tier_max_positions if tier_max_positions is not None else profile_cap
+        cap_source = "tier" if tier_max_positions is not None else "profile"
+        if final_pos_cap is not None and open_positions_count >= final_pos_cap:
             return RiskDecision(
                 False,
-                f"Open positions {open_positions_count} reached {profile.name} cap {profile.max_open_positions}",
+                f"Open positions {open_positions_count} reached {cap_source} cap {final_pos_cap}",
                 reason_code="TOO_MUCH_EXPOSURE",
-                details={"open_positions": open_positions_count, "cap": profile.max_open_positions},
+                details={
+                    "open_positions": open_positions_count,
+                    "profile_cap": profile_cap,
+                    "tier_cap": tier_max_positions,
+                    "final_cap_used": final_pos_cap,
+                    "cap_source": cap_source,
+                },
             )
 
         if profile.max_daily_trades is not None and daily_trades_count >= profile.max_daily_trades:
