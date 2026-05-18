@@ -15,12 +15,22 @@ data/_polymarket_l2_creds.json
 # Smoke + private logs (could contain wallet info if debug enabled)
 backend/_smoke_strict_logs/
 
-# All .db files ignored EXCEPT the live runtime DB (tracked via Git LFS)
+# Phase G DB-pull disaster fix (2026-05-18) — runtime DB MUST NOT be in git.
+# Previous LFS exception !data/polyoracle.db caused 2.4GB live DB to be replaced
+# by 134-byte version during pull → sqlite malformed → bot down.
+# Lives only on VPS, hourly backups also excluded.
 *.db
-!data/polyoracle.db
 *.sqlite
 *.db-wal
 *.db-shm
+data/_hourly_backups/
+data/_reclass_backups/
+data/_backups_audit/
+data/_backups_pre_p0/
+data/_backups_pre_watchlist/
+data/_recovery_*/
+data/wallet_polling_state.json
+data/logs/audit.log
 
 # Runtime logs (rotated, regenerable)
 backend.dev.log
