@@ -1183,7 +1183,11 @@ class WalletPollingEngine:
         - Shared TokenBucket (self.bucket) enforces global 18 calls/s.
         - Priority HOT > WARM > COLD with anti-starvation (2× interval escalation).
         """
+        # P0-B v2 (2026-05-18) — WRR scheduler if POLLING_WRR_ENABLED, else legacy
+        # priority queue (which starved WARM/COLD per prod data 2026-05-18 22:55).
         from app.services import polling_workers as _pw
+        from app.services import polling_workers_wrr as _wrr
+        use_wrr = os.environ.get("POLLING_WRR_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         loop = asyncio.get_event_loop()
 
         # Build wallet→lane map (uses hot lane classifier if enabled, else binary)
@@ -1203,8 +1207,17 @@ class WalletPollingEngine:
         warm_int = HOT_LANE_WARM_INTERVAL_S if SCHEDULER_HOT_LANE_ENABLED else POLLING_INTERVAL_SECONDS
         cold_int = HOT_LANE_COLD_INTERVAL_S if SCHEDULER_HOT_LANE_ENABLED else POLLING_INTERVAL_SECONDS * 2
 
-        queue = _pw.LanePriorityQueue()
-        queue.set_intervals(hot=hot_int, warm=warm_int, cold=cold_int)
+        if use_wrr:
+            w_hot, w_warm, w_cold = _wrr._weights()
+            queue = _wrr.WrrScheduler(weight_hot=w_hot, weight_warm=w_warm, weight_cold=w_cold)
+            logger.info(
+                "polling scheduler = WRR (weights HOT=%d WARM=%d COLD=%d)",
+                w_hot, w_warm, w_cold,
+            )
+        else:
+            queue = _pw.LanePriorityQueue()
+            queue.set_intervals(hot=hot_int, warm=warm_int, cold=cold_int)
+            logger.info("polling scheduler = LEGACY priority queue (anti-starve buggy)")
 
         # Stagger initial dues: spread by lane within each interval so first
         # pass isn't a thundering herd on Polymarket API.
@@ -1244,13 +1257,22 @@ class WalletPollingEngine:
                     POLLING_INTERVAL_ELITE_SECONDS if lane == "HOT" else POLLING_INTERVAL_SECONDS
                 )
 
-            pool = _pw.WorkerPool(
-                queue=queue,
-                rate_limiter=self.bucket,
-                poll_func=poll_func,
-                interval_func=interval_func,
-                n_workers=n_workers,
-            )
+            if use_wrr:
+                pool = _wrr.WrrWorkerPool(
+                    scheduler=queue,
+                    rate_limiter=self.bucket,
+                    poll_func=poll_func,
+                    interval_func=interval_func,
+                    n_workers=n_workers,
+                )
+            else:
+                pool = _pw.WorkerPool(
+                    queue=queue,
+                    rate_limiter=self.bucket,
+                    poll_func=poll_func,
+                    interval_func=interval_func,
+                    n_workers=n_workers,
+                )
             # Expose pool for observability endpoint
             self._worker_pool = pool
 

@@ -39,10 +39,13 @@ def workers_status() -> dict[str, Any]:
                 "pool": None,
                 "note": "workers not active (flag off OR engine on legacy loop)",
             }
-        return {
+        # WRR scheduler has .scheduler attr; legacy pool has .queue
+        sched_or_queue = getattr(pool, "scheduler", None) or getattr(pool, "queue", None)
+        result = {
             "workers_enabled_flag": _pw.is_enabled(),
+            "scheduler_type": "WRR" if hasattr(pool, "scheduler") else "LEGACY_PRIORITY",
             "n_workers": pool.n_workers,
-            "queue_size": pool.queue.size(),
+            "queue_size": sched_or_queue.size() if sched_or_queue else None,
             "polls_done": pool.stats.get("polls_done", 0),
             "errors": pool.stats.get("errors", 0),
             "by_lane": pool.stats.get("by_lane", {}),
@@ -52,6 +55,12 @@ def workers_status() -> dict[str, Any]:
                 for lane in ("HOT", "WARM", "COLD")
             } if hasattr(eng, "_wallet_lanes") else None,
         }
+        # WRR-specific stats
+        if hasattr(sched_or_queue, "size_by_lane"):
+            result["queue_size_by_lane"] = sched_or_queue.size_by_lane()
+        if hasattr(sched_or_queue, "served_by_lane"):
+            result["served_by_lane"] = sched_or_queue.served_by_lane()
+        return result
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
