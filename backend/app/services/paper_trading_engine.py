@@ -759,6 +759,50 @@ class PaperTradingEngine:
         PnL since T0_paper_72h baseline). Drives tier ramping NANO→TINY→MICRO."""
         return compute_effective_paper_capital(self.session, settings_fallback=self.settings.paper_capital)
 
+    def _decision_capital_snapshot(self, effective_override: float | None = None) -> dict[str, Any]:
+        """P0-A fix bug #70 — fresh capital snapshot for trade decision.
+
+        Returns ALL derived capital fields recomputed AT THE MOMENT of the call,
+        used by maybe_auto_trade to ensure exposure / cap / tier resolution
+        ALL see the same fresh effective_capital. Prevents the cached
+        `self.paper_capital` from going stale during long-lived engine.
+
+        ARGS
+        ====
+        effective_override : if provided, use this value instead of re-reading
+            _effective_paper_capital(). Used by callers (e.g. maybe_auto_trade)
+            that want **a single capital read per decision** for full coherence.
+
+        Includes:
+          - paper_base : BotState.paper_capital (operator baseline)
+          - effective_capital : base + cumul PnL post-T0 (or live wallet if live)
+          - open_notional_usd : sum of current open positions
+          - capital_available : effective - open_notional
+          - tier_name + max_positions + max_total_exposure : from CAPITAL_TIER_RULES
+          - max_total_exposure_usd : effective × tier.max_total_exposure
+
+        Used for both decision-time refresh AND no-trade decision logging.
+        """
+        from app.services.capital_allocator import _resolve_tier
+        from app.models.bot import BotState as _BotState
+
+        effective = effective_override if effective_override is not None else self._effective_paper_capital()
+        state = self.session.get(_BotState, 1)
+        paper_base = float(state.paper_capital) if state and state.paper_capital else float(self.settings.paper_capital)
+        open_notional = self.open_notional_usd()
+        tier = _resolve_tier(effective)
+        max_total_exposure_pct = float(tier.get("max_total_exposure_cap", 0.95))
+        return {
+            "paper_base": paper_base,
+            "effective_capital": effective,
+            "open_notional_usd": open_notional,
+            "capital_available": max(0.0, round(effective - open_notional, 4)),
+            "tier_name": tier.get("name"),
+            "max_positions_cap": int(tier.get("max_open_positions_cap", 0)),
+            "max_total_exposure_pct": max_total_exposure_pct,
+            "max_total_exposure_usd": round(effective * max_total_exposure_pct, 2),
+        }
+
     # ---------------- existing helpers ----------------
 
     def open_paper_position(
@@ -1592,6 +1636,19 @@ class PaperTradingEngine:
         if self.has_open_position_for_market_outcome(signal.market_id, signal.outcome, wallet_for_signal):
             return {"executed": False, "reason": "duplicate_market_outcome_position", "reason_code": "TOO_MUCH_EXPOSURE"}
 
+        # P0-A 2026-05-18 fix bug #70 — single fresh capital read per decision.
+        # Without this, self.paper_capital was cached at __init__ and stayed
+        # stale even after +$57K PnL → exposure cap stuck on init value → bot
+        # blocked in 1-in/1-out at ~$10K exposure while effective=$67K.
+        #
+        # Doctrine : ONE read of _effective_paper_capital() per decision via
+        # the snapshot helper, then set self.paper_capital from snapshot so all
+        # downstream helpers (current_exposure, market_exposure, _capital_available
+        # _usd, _max_wallet_usd, PortfolioState.capital_total) see identical value.
+        _effective = self._effective_paper_capital()  # ONE read
+        _cap_snapshot = self._decision_capital_snapshot(effective_override=_effective)
+        self.paper_capital = _effective  # propagate same value to all helpers
+
         # v0.7.2 — SignalClusterEngine check BEFORE allocator. Collapses
         # N wallet signals on the same (market, outcome, side) into one
         # logical trade decision. Filters DUPLICATE / CONFLICT / LATE_TRAP
@@ -1630,13 +1687,21 @@ class PaperTradingEngine:
             capital_total=float(self.paper_capital),  # 2026-05-17 live capital for position_size
         )
         if not decision.approved:
+            # P0-A : include capital snapshot in no-trade log for observability.
+            # Operator can audit if MAX_TOTAL_EXPOSURE rejects make sense given
+            # effective_capital and tier resolution at decision time.
             risk.log_no_trade(
                 self.session,
                 decision,
                 signal_id=signal.id,
                 market_id=signal.market_id,
                 wallet_address=wallet_address,
-                details={"profile": active_profile.name, "candidate_status": candidate_status, **(decision.details or {})},
+                details={
+                    "profile": active_profile.name,
+                    "candidate_status": candidate_status,
+                    "capital_snapshot": _cap_snapshot,
+                    **(decision.details or {}),
+                },
             )
             # A4 (2026-05-11): emit shadow log if strict mode rejected a trade
             # the legacy ELITE bypass would have skipped.
