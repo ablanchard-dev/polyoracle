@@ -878,53 +878,106 @@ class WalletPollingEngine:
     # ---------------- main loop ----------------
 
     def _classify_cohort_lanes(self, addresses: list) -> dict:
-        """Classify all wallets via HotLaneClassifier. Returns {addr: lane}.
+        """Classify all wallets via BATCH queries (perf-critical).
 
-        Safe : falls back to all WARM if classifier raises. Caches result.
-        Caps HOT lane to HOT_LANE_MAX_HOT_COUNT (top-N by score) to keep
-        polling budget under rate limit.
+        2026-05-18 v2 REFACTOR : remplace per-wallet 4 SELECT (2988 queries
+        sur 747 wallets = 6min freeze) par **3 batch GROUP BY queries** :
+            1. papertrade : MAX(opened_at) WHERE opened_at >= -24h GROUP BY wallet
+            2. notradedecision : MAX(created_at) WHERE created_at >= -24h GROUP BY wallet
+            3. marketfirstwalletrecord : recent_activity_score (1 SELECT)
+
+        Puis classify in-memory. Target: <1s pour 747 wallets.
+
+        Safe : falls back to all WARM si classifier raises. Caps HOT à
+        HOT_LANE_MAX_HOT_COUNT (top-N by score).
         """
         try:
             from app.services.hot_lane_classifier import (
-                HotLaneClassifier, LANE_HOT, LANE_WARM,
+                WalletActivitySnapshot, LANE_HOT, LANE_WARM, LANE_COLD,
             )
-            from sqlmodel import Session
+            from sqlmodel import Session, text
             from app.database import engine as _engine
         except Exception as exc:
             logger.warning("hot_lane_classifier import failed: %r — fallback WARM", exc)
             return {a: "WARM" for a in addresses}
 
+        import time as _time
+        t0 = _time.time()
         try:
             with Session(_engine) as session:
-                classifier = HotLaneClassifier(
-                    session,
-                    interval_hot_s=HOT_LANE_HOT_INTERVAL_S,
-                    interval_warm_s=HOT_LANE_WARM_INTERVAL_S,
-                    interval_cold_s=HOT_LANE_COLD_INTERVAL_S,
-                )
+                addr_set = set(addresses)
+                # BATCH 1 : derniers paper trades par wallet (last 24h)
+                paper_rows = session.exec(text(
+                    "SELECT wallet_address, MAX(opened_at) AS last_open "
+                    "FROM papertrade WHERE opened_at >= datetime('now', '-24 hours') "
+                    "GROUP BY wallet_address"
+                )).all()
+                paper_last: dict[str, str] = {r[0]: r[1] for r in paper_rows if r[0] in addr_set}
+
+                # BATCH 2 : derniers signaux par wallet (last 24h)
+                signal_rows = session.exec(text(
+                    "SELECT wallet_address, MAX(created_at) AS last_signal "
+                    "FROM notradedecision WHERE created_at >= datetime('now', '-24 hours') "
+                    "AND wallet_address IS NOT NULL "
+                    "GROUP BY wallet_address"
+                )).all()
+                signal_last: dict[str, str] = {r[0]: r[1] for r in signal_rows if r[0] in addr_set}
+
+                # BATCH 3 : recent_activity_score par wallet (MFWR)
+                ras_rows = session.exec(text(
+                    "SELECT address, recent_activity_score FROM marketfirstwalletrecord"
+                )).all()
+                ras_map: dict[str, float] = {
+                    r[0]: float(r[1]) if r[1] is not None else 0.0
+                    for r in ras_rows if r[0] in addr_set
+                }
+
+                # Compute cutoffs strings (SQLite format)
+                from datetime import datetime, timedelta, timezone
+                now = datetime.now(timezone.utc)
+                cutoff_1h = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                cutoff_24h_dt = now - timedelta(hours=24)
+
                 scored = []
                 lanes = {}
                 for addr in addresses:
-                    snap = classifier.snapshot_from_db(addr)
+                    snap = WalletActivitySnapshot(address=addr)
+                    # paper
+                    plast = paper_last.get(addr)
+                    if plast:
+                        snap.paper_trade_within_24h = True
+                        if plast >= cutoff_1h:
+                            snap.paper_trade_within_1h = True
+                    # signals
+                    slast = signal_last.get(addr)
+                    if slast:
+                        snap.signal_within_24h = True
+                        if slast >= cutoff_1h:
+                            snap.signal_within_1h = True
+                    # ras
+                    snap.recent_activity_score = ras_map.get(addr, 0.0)
                     lane = snap.classify()
                     lanes[addr] = lane
                     if lane == LANE_HOT:
                         scored.append((addr, snap.compute_score()))
-                # Cap HOT lane top-N by score
+
+                # Cap HOT top-N by score
                 if len(scored) > HOT_LANE_MAX_HOT_COUNT:
                     scored.sort(key=lambda x: -x[1])
                     for addr, _ in scored[HOT_LANE_MAX_HOT_COUNT:]:
                         lanes[addr] = LANE_WARM
+
                 hot_n = sum(1 for v in lanes.values() if v == "HOT")
                 warm_n = sum(1 for v in lanes.values() if v == "WARM")
                 cold_n = sum(1 for v in lanes.values() if v == "COLD")
+                elapsed_ms = int((_time.time() - t0) * 1000)
                 logger.info(
-                    "hot_lane_classify: total=%d HOT=%d WARM=%d COLD=%d (capped at %d)",
-                    len(addresses), hot_n, warm_n, cold_n, HOT_LANE_MAX_HOT_COUNT,
+                    "hot_lane_classify (batch v2): total=%d HOT=%d WARM=%d COLD=%d cap=%d elapsed=%dms",
+                    len(addresses), hot_n, warm_n, cold_n, HOT_LANE_MAX_HOT_COUNT, elapsed_ms,
                 )
                 return lanes
         except Exception as exc:
-            logger.warning("hot_lane classify failed: %r — fallback WARM", exc)
+            logger.warning("hot_lane classify (batch) failed: %r — fallback WARM", exc)
             return {a: "WARM" for a in addresses}
 
     def _hot_lane_interval(self, lane: str) -> float:
