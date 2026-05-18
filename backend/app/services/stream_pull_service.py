@@ -197,10 +197,17 @@ class StreamPullService:
                 continue
             # Use the EXACT same normalizer + processor as per-wallet polling.
             normalized = self.polling_engine._raw_to_audit_input(trade, wallet)
+            # P0-B 2026-05-18 — log-only delay observer (no-op if flag off)
+            from app.services import polling_delay_observer as _pdo
+            _obs = _pdo.start_observation(normalized)
             try:
-                result = await asyncio.to_thread(
-                    self.polling_engine._process_trade_in_session, normalized
-                )
+                result = None
+                try:
+                    result = await asyncio.to_thread(
+                        self.polling_engine._process_trade_in_session, normalized
+                    )
+                finally:
+                    _pdo.finalize_from_result(_obs, result)
                 self.trades_dispatched += 1
                 cycle_dispatched += 1
                 # Mirror polling counters for observability parity.

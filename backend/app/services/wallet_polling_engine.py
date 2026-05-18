@@ -595,6 +595,9 @@ class WalletPollingEngine:
                         "rejected": True,
                         "reason": "AUDIT_MISSING_AFTER_PERSIST",
                     }
+                # P0-B 2026-05-18 log-only observability — annotate active obs.
+                from app.services import polling_delay_observer as _pdo
+                _pdo.attach_audit_active(audit_record)
                 signal = signal_engine.build_signal_from_trade_audit(audit_record)
 
                 # v0.7.8 P3.1 — paper-eligibility freshness gate.
@@ -845,10 +848,17 @@ class WalletPollingEngine:
         for raw in rows:
             ts = int(raw.get("timestamp") or 0)
             normalized = self._raw_to_audit_input(raw, address)
-            result = await asyncio.to_thread(self._process_trade_in_session, normalized)
+            # P0-B 2026-05-18 — log-only delay observer (no-op if flag off)
+            from app.services import polling_delay_observer as _pdo
+            _obs = _pdo.start_observation(normalized)
+            result = None
+            try:
+                result = await asyncio.to_thread(self._process_trade_in_session, normalized)
+            finally:
+                _pdo.finalize_from_result(_obs, result)
             new_trades += 1
             self._trades_detected_session += 1
-            if result.get("executed"):
+            if result and result.get("executed"):
                 self._paper_trades_session += 1
             self.state.update(address, ts)
         if first_contact and new_trades == 0:
