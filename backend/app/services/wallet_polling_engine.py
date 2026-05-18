@@ -88,6 +88,13 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 POLLING_INTERVAL_SECONDS = env_int("POLLING_INTERVAL_SECONDS", 30)
 # v0.7.8 — ELITE wallets get a tighter re-poll interval so 1MN/2MN
 # markets stay copy-tradable. With cohort 981 + rate 5/s the effective
@@ -97,6 +104,19 @@ POLLING_INTERVAL_SECONDS = env_int("POLLING_INTERVAL_SECONDS", 30)
 # 30s — enough margin for 1MN markets.
 POLLING_INTERVAL_ELITE_SECONDS = env_int("POLLING_INTERVAL_ELITE_SECONDS", 10)
 POLLING_RATE_LIMIT_CALLS_PER_SEC = env_float("POLLING_RATE_LIMIT_CALLS_PER_SEC", 12.0)
+
+# 2026-05-18 — Hot lane scheduler (HOT 10s / WARM 60s / COLD 120s).
+# Feature flag : when enabled, polling priorities wallets by recent activity
+# (paper trade + signal + fresh API) instead of binary ELITE/non-ELITE.
+# Cache classification refreshed every 5min via background task.
+# Cap HOT lane at top-N by score to keep budget under rate limit.
+# Falls back to uniform polling if classifier raises exception.
+SCHEDULER_HOT_LANE_ENABLED = env_bool("SCHEDULER_HOT_LANE_ENABLED", False)
+HOT_LANE_HOT_INTERVAL_S = env_float("HOT_LANE_HOT_INTERVAL_S", 10.0)
+HOT_LANE_WARM_INTERVAL_S = env_float("HOT_LANE_WARM_INTERVAL_S", 60.0)
+HOT_LANE_COLD_INTERVAL_S = env_float("HOT_LANE_COLD_INTERVAL_S", 120.0)
+HOT_LANE_MAX_HOT_COUNT = env_int("HOT_LANE_MAX_HOT_COUNT", 40)
+HOT_LANE_REFRESH_INTERVAL_S = env_int("HOT_LANE_REFRESH_INTERVAL_S", 300)  # 5min
 POLLING_FETCH_LIMIT = env_int("POLLING_FETCH_LIMIT", 50)
 # v0.7.2 B2 — Restart freshness clamp (default 30 min). When the
 # polling resumes after a pause, ``last_seen_ts`` may be hours old. We
@@ -857,6 +877,63 @@ class WalletPollingEngine:
 
     # ---------------- main loop ----------------
 
+    def _classify_cohort_lanes(self, addresses: list) -> dict:
+        """Classify all wallets via HotLaneClassifier. Returns {addr: lane}.
+
+        Safe : falls back to all WARM if classifier raises. Caches result.
+        Caps HOT lane to HOT_LANE_MAX_HOT_COUNT (top-N by score) to keep
+        polling budget under rate limit.
+        """
+        try:
+            from app.services.hot_lane_classifier import (
+                HotLaneClassifier, LANE_HOT, LANE_WARM,
+            )
+            from sqlmodel import Session
+            from app.database import engine as _engine
+        except Exception as exc:
+            logger.warning("hot_lane_classifier import failed: %r — fallback WARM", exc)
+            return {a: "WARM" for a in addresses}
+
+        try:
+            with Session(_engine) as session:
+                classifier = HotLaneClassifier(
+                    session,
+                    interval_hot_s=HOT_LANE_HOT_INTERVAL_S,
+                    interval_warm_s=HOT_LANE_WARM_INTERVAL_S,
+                    interval_cold_s=HOT_LANE_COLD_INTERVAL_S,
+                )
+                scored = []
+                lanes = {}
+                for addr in addresses:
+                    snap = classifier.snapshot_from_db(addr)
+                    lane = snap.classify()
+                    lanes[addr] = lane
+                    if lane == LANE_HOT:
+                        scored.append((addr, snap.compute_score()))
+                # Cap HOT lane top-N by score
+                if len(scored) > HOT_LANE_MAX_HOT_COUNT:
+                    scored.sort(key=lambda x: -x[1])
+                    for addr, _ in scored[HOT_LANE_MAX_HOT_COUNT:]:
+                        lanes[addr] = LANE_WARM
+                hot_n = sum(1 for v in lanes.values() if v == "HOT")
+                warm_n = sum(1 for v in lanes.values() if v == "WARM")
+                cold_n = sum(1 for v in lanes.values() if v == "COLD")
+                logger.info(
+                    "hot_lane_classify: total=%d HOT=%d WARM=%d COLD=%d (capped at %d)",
+                    len(addresses), hot_n, warm_n, cold_n, HOT_LANE_MAX_HOT_COUNT,
+                )
+                return lanes
+        except Exception as exc:
+            logger.warning("hot_lane classify failed: %r — fallback WARM", exc)
+            return {a: "WARM" for a in addresses}
+
+    def _hot_lane_interval(self, lane: str) -> float:
+        if lane == "HOT":
+            return HOT_LANE_HOT_INTERVAL_S
+        if lane == "COLD":
+            return HOT_LANE_COLD_INTERVAL_S
+        return HOT_LANE_WARM_INTERVAL_S
+
     async def run_loop(self) -> None:
         if not self._cohort:
             # v0.7.8 P6 — read capital_total from BotState so load_cohort
@@ -875,15 +952,33 @@ class WalletPollingEngine:
         if not self._cohort:
             logger.error("polling cohort empty — stopping")
             return
-        logger.info(
-            "polling start: pool=%d, interval_default=%ds, interval_elite=%ds, "
-            "rate=%.1f calls/s, elite_count=%d",
-            len(self._cohort),
-            POLLING_INTERVAL_SECONDS,
-            POLLING_INTERVAL_ELITE_SECONDS,
-            POLLING_RATE_LIMIT_CALLS_PER_SEC,
-            len(self._elite_addresses),
-        )
+        # 2026-05-18 — Hot lane classification cache. Refreshed every 5min
+        # via background task. Falls back to ELITE binary set if disabled.
+        self._wallet_lanes: dict[str, str] = {}
+        self._lane_last_refresh: float = 0.0
+        if SCHEDULER_HOT_LANE_ENABLED:
+            self._wallet_lanes = self._classify_cohort_lanes(list(self._cohort))
+            self._lane_last_refresh = asyncio.get_event_loop().time()
+            hot_count = sum(1 for v in self._wallet_lanes.values() if v == "HOT")
+            warm_count = sum(1 for v in self._wallet_lanes.values() if v == "WARM")
+            cold_count = sum(1 for v in self._wallet_lanes.values() if v == "COLD")
+            logger.info(
+                "polling start (HOT LANE ON): pool=%d HOT=%d WARM=%d COLD=%d "
+                "intervals HOT=%.0fs WARM=%.0fs COLD=%.0fs rate=%.1f",
+                len(self._cohort), hot_count, warm_count, cold_count,
+                HOT_LANE_HOT_INTERVAL_S, HOT_LANE_WARM_INTERVAL_S, HOT_LANE_COLD_INTERVAL_S,
+                POLLING_RATE_LIMIT_CALLS_PER_SEC,
+            )
+        else:
+            logger.info(
+                "polling start: pool=%d, interval_default=%ds, interval_elite=%ds, "
+                "rate=%.1f calls/s, elite_count=%d",
+                len(self._cohort),
+                POLLING_INTERVAL_SECONDS,
+                POLLING_INTERVAL_ELITE_SECONDS,
+                POLLING_RATE_LIMIT_CALLS_PER_SEC,
+                len(self._elite_addresses),
+            )
         # v0.7.8 — initial stagger uses the per-wallet interval so ELITE
         # wallets are spread across the first ELITE-window (~30s) and
         # non-ELITE wallets are spread across the default window (~90s).
@@ -926,13 +1021,22 @@ class WalletPollingEngine:
                         type(exc).__name__, addr, str(exc),
                     )
                     self._errors_session += 1
-                # v0.7.8 — ELITE re-polled at tighter interval to keep
-                # 1MN/2MN markets copy-tradable. Non-ELITE keeps default.
-                _interval = (
-                    POLLING_INTERVAL_ELITE_SECONDS
-                    if addr in self._elite_addresses
-                    else POLLING_INTERVAL_SECONDS
-                )
+                # 2026-05-18 — Hot lane scheduler (if enabled) uses per-wallet
+                # lane (HOT/WARM/COLD) instead of binary ELITE/non-ELITE.
+                # Refresh lane cache every 5min.
+                if SCHEDULER_HOT_LANE_ENABLED:
+                    if loop.time() - self._lane_last_refresh > HOT_LANE_REFRESH_INTERVAL_S:
+                        self._wallet_lanes = self._classify_cohort_lanes(list(self._cohort))
+                        self._lane_last_refresh = loop.time()
+                    _lane = self._wallet_lanes.get(addr, "WARM")
+                    _interval = self._hot_lane_interval(_lane)
+                else:
+                    # Legacy v0.7.8 binary ELITE/non-ELITE
+                    _interval = (
+                        POLLING_INTERVAL_ELITE_SECONDS
+                        if addr in self._elite_addresses
+                        else POLLING_INTERVAL_SECONDS
+                    )
                 next_due[addr] = loop.time() + _interval
                 # DB writes block the asyncio loop because Session is sync.
                 # Throttle to once every 30 polls so we don't serialize the
