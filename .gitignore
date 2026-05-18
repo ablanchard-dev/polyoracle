@@ -4,6 +4,11 @@
 # NEVER track. Lives ONLY on the VPS via systemd Environment= or chmod 600 file.
 .env.live
 backend/.env.live
+
+# Phase F live setup (2026-05-17) — backend/.env now carries live wallet secrets
+# (POLYMARKET_PRIVATE_KEY, CLOB L2 creds, RELAYER key). Never track.
+backend/.env
+backend/.env.bak*
 .env.production
 # CLOB L2 credentials cache (apiKey/secret/passphrase derived from PRIVATE_KEY)
 data/_polymarket_l2_creds.json
