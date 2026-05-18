@@ -293,10 +293,26 @@ class SignalEngine:
         return round(max_risk_2r, 2)
 
     def _live_capital(self) -> float:
-        """Read live BotState.paper_capital (= effective capital after restart),
-        fall back to static settings.paper_capital if unavailable. Single source
-        of truth for sizing decisions in this engine.
+        """Return EFFECTIVE paper capital = paper_capital base + cumul PnL post-T0.
+
+        2026-05-18 FIX (operator validated):
+        - Was returning BotState.paper_capital (STATIC at restart, e.g. $10k).
+        - Doctrine: "si PnL bot change comportement" — R doit scaler avec live PnL.
+        - Sans ça, bot reste sous-leverage (e.g. $200/trade au lieu de $572 sur
+          effective $28k = +$18k PnL).
+        - compute_effective_paper_capital() lit BotState.paper_capital + sum realized_pnl
+          post-T0 (cohérent avec tier resolution).
+
+        Fallback: static paper_capital if compute fails (rare).
         """
+        try:
+            from app.services.paper_trading_engine import compute_effective_paper_capital
+            cap = compute_effective_paper_capital(self.session)
+            if cap and cap > 0:
+                return float(cap)
+        except Exception:
+            pass
+        # Fallback ladder
         try:
             from app.models.bot import BotState
             from sqlmodel import select
