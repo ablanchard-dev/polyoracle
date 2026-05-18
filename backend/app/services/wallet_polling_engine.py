@@ -175,10 +175,18 @@ HTTP_TIMEOUT = env_float("POLLING_HTTP_TIMEOUT_S", 15.0)
 
 @dataclass
 class PollingState:
-    """In-memory snapshot of the per-wallet ``last_seen_ts`` (unix seconds)."""
+    """In-memory snapshot of the per-wallet ``last_seen_ts`` (unix seconds).
+
+    P0-B 2026-05-18 : update/save are guarded by a re-entrant lock so the
+    multi-worker pool can call ``update`` concurrently without dict races
+    or interleaved JSON writes. The lock is a threading.RLock because
+    update is called from sync code (via ``asyncio.to_thread``) on
+    multiple worker threads.
+    """
 
     last_seen_ts: dict[str, int] = field(default_factory=dict)
     state_file: Path = POLLING_STATE_FILE
+    _lock: "threading.RLock" = field(default_factory=lambda: __import__("threading").RLock())
 
     @classmethod
     def load(cls, path: Path = POLLING_STATE_FILE) -> "PollingState":
@@ -192,16 +200,18 @@ class PollingState:
             return cls(last_seen_ts={}, state_file=path)
 
     def save(self) -> None:
-        tmp = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.last_seen_ts, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(self.state_file)
+        with self._lock:
+            tmp = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+            tmp.write_text(json.dumps(self.last_seen_ts, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(self.state_file)
 
     def update(self, address: str, ts: int) -> None:
         addr = address.lower()
-        prev = self.last_seen_ts.get(addr, 0)
-        if ts > prev:
-            self.last_seen_ts[addr] = ts
-            self.save()
+        with self._lock:
+            prev = self.last_seen_ts.get(addr, 0)
+            if ts > prev:
+                self.last_seen_ts[addr] = ts
+                self.save()
 
 
 class TokenBucket:
@@ -1077,6 +1087,15 @@ class WalletPollingEngine:
                 POLLING_RATE_LIMIT_CALLS_PER_SEC,
                 len(self._elite_addresses),
             )
+        # P0-B 2026-05-18 — branch on POLLING_WORKERS_ENABLED.
+        # Flag ON  → parallel async workers with priority queue (anti-starvation).
+        # Flag OFF → legacy single-worker sequential loop (below).
+        from app.services import polling_workers as _pw
+        if _pw.is_enabled():
+            logger.info("polling architecture = WORKERS (P0-B parallel async, flag ON)")
+            await self._run_loop_workers()
+            return
+        logger.info("polling architecture = LEGACY (single-worker, flag OFF)")
         # v0.7.8 — initial stagger uses the per-wallet interval so ELITE
         # wallets are spread across the first ELITE-window (~30s) and
         # non-ELITE wallets are spread across the default window (~90s).
@@ -1150,6 +1169,144 @@ class WalletPollingEngine:
                 # polling cycle. Cheap (only runs if a position is due)
                 # and replaces the 600s lag for ULTRA_SHORT trades.
                 await asyncio.to_thread(self._run_adaptive_close_loop_sync)
+
+    async def _run_loop_workers(self) -> None:
+        """P0-B 2026-05-18 — parallel async workers with priority queue.
+
+        Replaces the single-worker sequential loop when POLLING_WORKERS_ENABLED.
+        Architecture (see app/services/polling_workers.py docstring):
+        - N workers (default 8) consume a LanePriorityQueue.
+        - Workers do ONLY: get → rate-limit → poll → process → update_state → requeue.
+        - Close-loops + DB counter updater run as SEPARATE background coroutines,
+          NOT inside workers (avoids re-introducing the blocking that the legacy
+          loop suffered from).
+        - Shared TokenBucket (self.bucket) enforces global 18 calls/s.
+        - Priority HOT > WARM > COLD with anti-starvation (2× interval escalation).
+        """
+        from app.services import polling_workers as _pw
+        loop = asyncio.get_event_loop()
+
+        # Build wallet→lane map (uses hot lane classifier if enabled, else binary)
+        if SCHEDULER_HOT_LANE_ENABLED:
+            self._wallet_lanes = self._classify_cohort_lanes(list(self._cohort))
+            self._lane_last_refresh = loop.time()
+        else:
+            # Map ELITE → HOT, non-ELITE → WARM for backwards-compat shape
+            self._wallet_lanes = {
+                a: ("HOT" if a in self._elite_addresses else "WARM")
+                for a in self._cohort
+            }
+            self._lane_last_refresh = loop.time()
+
+        # Initial intervals for the queue
+        hot_int = HOT_LANE_HOT_INTERVAL_S if SCHEDULER_HOT_LANE_ENABLED else POLLING_INTERVAL_ELITE_SECONDS
+        warm_int = HOT_LANE_WARM_INTERVAL_S if SCHEDULER_HOT_LANE_ENABLED else POLLING_INTERVAL_SECONDS
+        cold_int = HOT_LANE_COLD_INTERVAL_S if SCHEDULER_HOT_LANE_ENABLED else POLLING_INTERVAL_SECONDS * 2
+
+        queue = _pw.LanePriorityQueue()
+        queue.set_intervals(hot=hot_int, warm=warm_int, cold=cold_int)
+
+        # Stagger initial dues: spread by lane within each interval so first
+        # pass isn't a thundering herd on Polymarket API.
+        n_workers = _pw.workers_count()
+        hot_addrs = [a for a, l in self._wallet_lanes.items() if l == "HOT"]
+        warm_addrs = [a for a, l in self._wallet_lanes.items() if l == "WARM"]
+        cold_addrs = [a for a, l in self._wallet_lanes.items() if l == "COLD"]
+
+        def _stagger(addrs, interval):
+            n = max(1, len(addrs))
+            return [(addr, idx * interval / n) for idx, addr in enumerate(addrs)]
+
+        for addr, offset in _stagger(hot_addrs, hot_int):
+            await queue.put(addr, "HOT", loop.time() + offset)
+        for addr, offset in _stagger(warm_addrs, warm_int):
+            await queue.put(addr, "WARM", loop.time() + offset)
+        for addr, offset in _stagger(cold_addrs, cold_int):
+            await queue.put(addr, "COLD", loop.time() + offset)
+
+        logger.info(
+            "P0-B workers: pool=%d cohort=%d HOT=%d WARM=%d COLD=%d "
+            "intervals HOT=%.0fs WARM=%.0fs COLD=%.0fs rate=%.1f",
+            n_workers, len(self._cohort), len(hot_addrs), len(warm_addrs),
+            len(cold_addrs), hot_int, warm_int, cold_int,
+            POLLING_RATE_LIMIT_CALLS_PER_SEC,
+        )
+
+        # Single shared httpx client passed to poll_wallet_once via closure.
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+
+            async def poll_func(addr: str) -> None:
+                await self.poll_wallet_once(client, addr)
+                self._poll_count += 1
+
+            def interval_func(lane: str) -> float:
+                return self._hot_lane_interval(lane) if SCHEDULER_HOT_LANE_ENABLED else (
+                    POLLING_INTERVAL_ELITE_SECONDS if lane == "HOT" else POLLING_INTERVAL_SECONDS
+                )
+
+            pool = _pw.WorkerPool(
+                queue=queue,
+                rate_limiter=self.bucket,
+                poll_func=poll_func,
+                interval_func=interval_func,
+                n_workers=n_workers,
+            )
+
+            # Background tasks (NOT in workers): close-loops + DB counter +
+            # lane refresh + heartbeat tick for watchdog.
+            stop_bg = asyncio.Event()
+
+            async def bg_close_loop() -> None:
+                while not stop_bg.is_set():
+                    try:
+                        await asyncio.to_thread(self._maybe_run_close_loop_sync)
+                        await asyncio.to_thread(self._run_adaptive_close_loop_sync)
+                    except Exception as exc:
+                        logger.warning("bg_close_loop err: %r", exc)
+                    try:
+                        await asyncio.wait_for(stop_bg.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+            async def bg_db_counter() -> None:
+                while not stop_bg.is_set():
+                    try:
+                        await asyncio.to_thread(self._update_db_counters_sync)
+                    except Exception as exc:
+                        logger.warning("bg_db_counter err: %r", exc)
+                    try:
+                        await asyncio.wait_for(stop_bg.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+            async def bg_heartbeat() -> None:
+                while not stop_bg.is_set():
+                    self._iteration_heartbeat = asyncio.get_event_loop().time()
+                    try:
+                        await asyncio.wait_for(stop_bg.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+            bg_tasks = [
+                asyncio.create_task(bg_close_loop(), name="bg_close_loop"),
+                asyncio.create_task(bg_db_counter(), name="bg_db_counter"),
+                asyncio.create_task(bg_heartbeat(), name="bg_heartbeat"),
+            ]
+            await pool.start()
+
+            try:
+                # Wait until stop_event is signalled.
+                if self._stop_event is not None:
+                    await self._stop_event.wait()
+            finally:
+                logger.info("P0-B workers: stopping...")
+                stop_bg.set()
+                await pool.stop()
+                for t in bg_tasks:
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
+                logger.info("P0-B workers: stopped cleanly. Final stats: %s", pool.stats)
 
     def _run_adaptive_close_loop_sync(self) -> None:
         """v0.7.8 Phase 2 — adaptive close-loop iteration. Pop due
