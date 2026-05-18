@@ -36,9 +36,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# USDC.e on Polygon (used by Polymarket as collateral)
+# USDC.e legacy on Polygon (Polymarket V1 collateral)
 USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-# pUSD (Polymarket wrapper, v2) — set via env to skip if not deployed
+# USDC native on Polygon (Polymarket récent — utilisé maintenant)
+USDC_NATIVE_ADDRESS = "0x3c499c542cef5e3811E1192ce70d8cC03d5c3359"
+# pUSD (Polymarket wrapper) — set via env to skip if not deployed
 PUSD_ADDRESS = os.environ.get("POLYMARKET_PUSD_ADDRESS", "")
 
 # Standard ERC20 balanceOf ABI fragment
@@ -99,14 +101,25 @@ class LiveWalletReader:
                 return False
             checksum_wallet = Web3.to_checksum_address(self._deposit_wallet)
             self._deposit_wallet = checksum_wallet
-            self._usdc_contract = self._w3.eth.contract(
+            # USDC.e legacy + USDC native (Polymarket récent)
+            self._usdc_e_contract = self._w3.eth.contract(
                 address=Web3.to_checksum_address(USDC_E_ADDRESS),
                 abi=ERC20_BALANCEOF_ABI,
             )
-            self._pusd_contract = self._w3.eth.contract(
-                address=Web3.to_checksum_address(PUSD_ADDRESS),
+            self._usdc_native_contract = self._w3.eth.contract(
+                address=Web3.to_checksum_address(USDC_NATIVE_ADDRESS),
                 abi=ERC20_BALANCEOF_ABI,
             )
+            # pUSD optional — only if env set
+            self._pusd_contract = None
+            if PUSD_ADDRESS:
+                try:
+                    self._pusd_contract = self._w3.eth.contract(
+                        address=Web3.to_checksum_address(PUSD_ADDRESS),
+                        abi=ERC20_BALANCEOF_ABI,
+                    )
+                except Exception as exc:
+                    logger.warning("pUSD address invalid: %r", exc)
             logger.info(
                 "LiveWalletReader initialized: wallet=%s rpc=%s",
                 self._deposit_wallet, rpc_url[:40] + "...",
@@ -131,21 +144,29 @@ class LiveWalletReader:
             return None
 
         try:
-            usdc_wei = self._usdc_contract.functions.balanceOf(self._deposit_wallet).call()
-            usdc_balance = usdc_wei / 1e6  # USDC has 6 decimals
+            # USDC.e (legacy)
+            usdc_e_wei = self._usdc_e_contract.functions.balanceOf(self._deposit_wallet).call()
+            usdc_e = usdc_e_wei / 1e6
 
-            try:
-                pusd_wei = self._pusd_contract.functions.balanceOf(self._deposit_wallet).call()
-                pusd_balance = pusd_wei / 1e6
-            except Exception:
-                pusd_balance = 0.0
+            # USDC native (Polymarket récent)
+            usdc_native_wei = self._usdc_native_contract.functions.balanceOf(self._deposit_wallet).call()
+            usdc_native = usdc_native_wei / 1e6
 
-            total = usdc_balance + pusd_balance
+            # pUSD (optional)
+            pusd = 0.0
+            if self._pusd_contract is not None:
+                try:
+                    pusd_wei = self._pusd_contract.functions.balanceOf(self._deposit_wallet).call()
+                    pusd = pusd_wei / 1e6
+                except Exception:
+                    pass
+
+            total = usdc_e + usdc_native + pusd
             self._cache_value = total
             self._cache_at = time.time()
             logger.debug(
-                "LiveWalletReader: usdc=%.4f pusd=%.4f total=%.4f",
-                usdc_balance, pusd_balance, total,
+                "LiveWalletReader: usdc.e=%.4f usdc_native=%.4f pusd=%.4f total=%.4f",
+                usdc_e, usdc_native, pusd, total,
             )
             return total
         except Exception as exc:
