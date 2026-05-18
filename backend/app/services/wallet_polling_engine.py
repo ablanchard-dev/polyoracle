@@ -848,9 +848,11 @@ class WalletPollingEngine:
         for raw in rows:
             ts = int(raw.get("timestamp") or 0)
             normalized = self._raw_to_audit_input(raw, address)
-            # P0-B 2026-05-18 — log-only delay observer (no-op if flag off)
+            # P0-B 2026-05-18 — log-only delay observer (no-op if flag off).
+            # Pass the RAW Polymarket dict (has `timestamp`, `proxyWallet`) for
+            # source_trade_ts capture; the normalized dict drops `timestamp`.
             from app.services import polling_delay_observer as _pdo
-            _obs = _pdo.start_observation(normalized)
+            _obs = _pdo.start_observation({**raw, "wallet_address": address})
             result = None
             try:
                 result = await asyncio.to_thread(self._process_trade_in_session, normalized)
