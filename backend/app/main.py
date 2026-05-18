@@ -220,6 +220,28 @@ async def on_startup() -> None:
             type(_bootexc3).__name__, _bootexc3,
         )
 
+    # P0.3 (2026-05-18) — FreshApiEnrichmentService SHADOW.
+    # Measure-only : quantifies COLD lane angle mort by checking Polymarket
+    # data-api for COLD wallets. Does NOT modify classifier. Feature-flagged
+    # via FRESH_API_SHADOW_ENABLED. Doctrine : zéro changement comportemental.
+    try:
+        from app.services.fresh_api_enrichment_shadow import (
+            run_loop_shadow, env_bool,
+        )
+        if env_bool("FRESH_API_SHADOW_ENABLED", False):
+            import asyncio
+            import logging
+            asyncio.create_task(run_loop_shadow())
+            logging.getLogger(__name__).info(
+                "fresh_api_shadow: enabled via FRESH_API_SHADOW_ENABLED=true"
+            )
+    except Exception as _bootexc4:
+        import logging
+        logging.getLogger(__name__).warning(
+            "fresh_api_shadow failed to launch: %s: %s",
+            type(_bootexc4).__name__, _bootexc4,
+        )
+
 
 app.include_router(health.router)
 app.include_router(markets.router)

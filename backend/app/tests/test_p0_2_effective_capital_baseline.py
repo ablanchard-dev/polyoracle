@@ -42,7 +42,8 @@ def test_strict_mode_returns_effective_baseline_t0_regardless_of_file():
     with patch(
         "app.services.paper_trading_engine._read_paper_baseline_at",
         return_value=datetime(2026, 5, 1, 0, 0, 0, tzinfo=timezone.utc),
-    ):
+    ), patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = None
         baseline, src = _resolve_baseline_for_capital_calc(strict_mode=True)
     assert baseline == EFFECTIVE_BASELINE_T0
     assert src == "effective_baseline_t0"
@@ -54,7 +55,8 @@ def test_non_strict_uses_file_baseline_when_present():
     with patch(
         "app.services.paper_trading_engine._read_paper_baseline_at",
         return_value=file_t0,
-    ):
+    ), patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = None
         baseline, src = _resolve_baseline_for_capital_calc(strict_mode=False)
     assert baseline == file_t0
     assert src == "file_t0"
@@ -65,7 +67,8 @@ def test_non_strict_no_file_returns_none():
     with patch(
         "app.services.paper_trading_engine._read_paper_baseline_at",
         return_value=None,
-    ):
+    ), patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = None
         baseline, src = _resolve_baseline_for_capital_calc(strict_mode=False)
     assert baseline is None
     assert src == "none"
@@ -77,7 +80,8 @@ def test_non_strict_old_file_emits_warning(caplog):
     with patch(
         "app.services.paper_trading_engine._read_paper_baseline_at",
         return_value=old_file_t0,
-    ):
+    ), patch("app.services.paper_trading_engine.get_settings") as gs:
+        gs.return_value.strict_cutover_at = None
         with caplog.at_level("WARNING"):
             baseline, src = _resolve_baseline_for_capital_calc(strict_mode=False)
     assert baseline == old_file_t0
@@ -253,7 +257,77 @@ def test_strict_cutover_at_override_filters_trades_correctly(session):
     with patch("app.services.paper_trading_engine.get_settings") as gs:
         gs.return_value.paper_live_strict = True
         gs.return_value.strict_cutover_at = cutover.isoformat()
+        gs.return_value.live_enabled = False
         capital = compute_effective_paper_capital(session)
 
     # base 100 + only post-cutover PnL 12 = 112
     assert capital == 112.0
+
+
+# ---------------- LIVE branch (LiveWalletReader integration) ----------------
+
+
+def test_live_enabled_returns_on_chain_balance(session):
+    """When live_enabled=True and reader returns balance, that wins."""
+    from app.services.live_wallet_reader import LiveWalletReader
+    LiveWalletReader._instance = None
+    fake_reader = type("FakeReader", (), {"read_usdc_balance": lambda self: 16.39467})()
+    with patch("app.services.paper_trading_engine.get_settings") as gs, \
+         patch.object(LiveWalletReader, "instance", return_value=fake_reader):
+        gs.return_value.live_enabled = True
+        gs.return_value.paper_live_strict = False
+        gs.return_value.strict_cutover_at = None
+        capital = compute_effective_paper_capital(session)
+    assert capital == pytest.approx(16.39467)
+
+
+def test_live_enabled_falls_back_to_paper_when_reader_returns_none(session, caplog):
+    """If reader returns None (CLOB down), paper logic kicks in."""
+    from app.services.live_wallet_reader import LiveWalletReader
+    LiveWalletReader._instance = None
+    fake_reader = type("FakeReader", (), {"read_usdc_balance": lambda self: None})()
+    with patch("app.services.paper_trading_engine.get_settings") as gs, \
+         patch.object(LiveWalletReader, "instance", return_value=fake_reader), \
+         patch("app.services.paper_trading_engine._read_paper_baseline_at", return_value=None):
+        gs.return_value.live_enabled = True
+        gs.return_value.paper_live_strict = False
+        gs.return_value.strict_cutover_at = None
+        with caplog.at_level("WARNING"):
+            capital = compute_effective_paper_capital(session)
+    assert capital == 100.0  # paper_capital from BotState fixture
+    assert any("LiveWalletReader returned" in r.message for r in caplog.records)
+
+
+def test_live_enabled_zero_balance_falls_back_to_paper(session):
+    """Balance <= 0 → fallback (avoids sizing on 0)."""
+    from app.services.live_wallet_reader import LiveWalletReader
+    LiveWalletReader._instance = None
+    fake_reader = type("FakeReader", (), {"read_usdc_balance": lambda self: 0.0})()
+    with patch("app.services.paper_trading_engine.get_settings") as gs, \
+         patch.object(LiveWalletReader, "instance", return_value=fake_reader), \
+         patch("app.services.paper_trading_engine._read_paper_baseline_at", return_value=None):
+        gs.return_value.live_enabled = True
+        gs.return_value.paper_live_strict = False
+        gs.return_value.strict_cutover_at = None
+        capital = compute_effective_paper_capital(session)
+    assert capital == 100.0
+
+
+def test_live_disabled_skips_reader_entirely(session):
+    """live_enabled=False → never even calls reader."""
+    from app.services.live_wallet_reader import LiveWalletReader
+    LiveWalletReader._instance = None
+    calls = {"n": 0}
+    def boom(self):
+        calls["n"] += 1
+        return 999.0  # would override paper if called
+    fake_reader = type("FakeReader", (), {"read_usdc_balance": boom})()
+    with patch("app.services.paper_trading_engine.get_settings") as gs, \
+         patch.object(LiveWalletReader, "instance", return_value=fake_reader), \
+         patch("app.services.paper_trading_engine._read_paper_baseline_at", return_value=None):
+        gs.return_value.live_enabled = False
+        gs.return_value.paper_live_strict = False
+        gs.return_value.strict_cutover_at = None
+        capital = compute_effective_paper_capital(session)
+    assert calls["n"] == 0
+    assert capital == 100.0

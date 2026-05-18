@@ -275,8 +275,29 @@ def compute_effective_paper_capital(session: Session, *, settings_fallback: floa
     quand PAPER_LIVE_STRICT=true. Ne plus utiliser T0_paper_72h si strict
     baseline existe."
     """
-    from app.config import get_settings
     from sqlalchemy import func as _func
+
+    # LIVE mode: read true on-chain Polymarket collateral via CLOB API
+    # (LiveWalletReader caches 60s). Paper=live invariant: sizing must use
+    # the actual wallet balance, not the paper accounting.
+    try:
+        _settings = get_settings()
+        if getattr(_settings, "live_enabled", False) is True:
+            from app.services.live_wallet_reader import LiveWalletReader
+            live_bal = LiveWalletReader.instance().read_usdc_balance()
+            if live_bal is not None and live_bal > 0:
+                return float(live_bal)
+            import logging
+            logging.getLogger(__name__).warning(
+                "compute_effective_paper_capital: live_enabled=True but "
+                "LiveWalletReader returned %r → falling back to paper logic",
+                live_bal,
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "compute_effective_paper_capital: live-branch failed (%r) → paper fallback", exc,
+        )
 
     state = session.get(BotState, 1)
     if state is None or state.paper_capital is None:

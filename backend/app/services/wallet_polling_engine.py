@@ -975,6 +975,39 @@ class WalletPollingEngine:
                     "hot_lane_classify (batch v2): total=%d HOT=%d WARM=%d COLD=%d cap=%d elapsed=%dms",
                     len(addresses), hot_n, warm_n, cold_n, HOT_LANE_MAX_HOT_COUNT, elapsed_ms,
                 )
+                # P0.1 instrumentation — dump snapshot for offline analysis.
+                # Non-invasive : ne change pas le comportement, juste un fichier.
+                try:
+                    import json as _json
+                    import os as _os
+                    _snap_dir = "/opt/app/polyoracle/data/_lane_snapshots"
+                    _os.makedirs(_snap_dir, exist_ok=True)
+                    _snap = {
+                        "snapshot_at": now.isoformat(),
+                        "cohort_size": len(addresses),
+                        "hot_count": hot_n,
+                        "warm_count": warm_n,
+                        "cold_count": cold_n,
+                        "hot_cap": HOT_LANE_MAX_HOT_COUNT,
+                        "elapsed_ms": elapsed_ms,
+                        "lanes": {
+                            addr: {
+                                "lane": lanes.get(addr, "WARM"),
+                                "ras": ras_map.get(addr, 0.0),
+                                "paper_1h": addr in paper_last and paper_last[addr] >= cutoff_1h,
+                                "signal_1h": addr in signal_last and signal_last[addr] >= cutoff_1h,
+                            }
+                            for addr in addresses
+                        },
+                    }
+                    with open(f"{_snap_dir}/lane_snapshot_latest.json", "w") as fh:
+                        _json.dump(_snap, fh)
+                    # also keep timestamped copy every 5min for time-series
+                    _ts = now.strftime("%Y%m%dT%H%M%SZ")
+                    with open(f"{_snap_dir}/lane_snapshot_{_ts}.json", "w") as fh:
+                        _json.dump(_snap, fh)
+                except Exception as exc:
+                    logger.debug("lane_snapshot dump failed (non-fatal): %r", exc)
                 return lanes
         except Exception as exc:
             logger.warning("hot_lane classify (batch) failed: %r — fallback WARM", exc)
