@@ -209,6 +209,52 @@ class MarketMetadataResolver:
             weakref.WeakValueDictionary()
         )
         self._locks_dict_lock = threading.Lock()
+        # P0-E 2026-05-19 — observability counters (purely additive, no logic
+        # change). All increments under _stats_lock for thread safety since
+        # resolver is shared across audit workers (P0-D pool n=4).
+        self._stats_lock = threading.Lock()
+        self._stats: dict[str, int] = {
+            "total_calls": 0,
+            "blacklist_hits": 0,         # short-circuit via _not_found
+            "blacklist_adds": 0,         # Gamma confirmed NOT_FOUND → added
+            "lock_timeouts": 0,          # per-market lock acquire timed out
+            "cache_full_hits": 0,        # static+dynamic both fresh → no fetch
+            "cache_partial_misses": 0,   # one of static/dynamic stale → fetch
+            "rate_limit_timeouts": 0,    # _bucket.try_acquire failed
+            "gamma_fetches": 0,          # actual Gamma API call made
+            "gamma_errors": 0,           # Gamma raised exception
+            "gamma_empty": 0,            # Gamma returned no doc (→ blacklist)
+            "clob_fetches": 0,           # actual CLOB orderbook call made
+            "clob_errors": 0,            # CLOB raised
+            "upsert_success": 0,         # DB upsert worked
+            "upsert_fails": 0,           # DB upsert raised
+            "result_complete": 0,
+            "result_partial_no_orderbook": 0,
+            "result_not_found": 0,
+            "result_fetch_failed": 0,
+            "result_timeout": 0,
+        }
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return a snapshot of the resolver counters + derived rates.
+        P0-E observability — read-only, no side effect."""
+        with self._stats_lock:
+            stats = dict(self._stats)
+        total = stats["total_calls"] or 1
+        return {
+            **stats,
+            "cache_hit_rate_pct": round(100 * stats["cache_full_hits"] / total, 2),
+            "blacklist_hit_rate_pct": round(100 * stats["blacklist_hits"] / total, 2),
+            "gamma_fetch_rate_pct": round(100 * stats["gamma_fetches"] / total, 2),
+            "result_complete_pct": round(100 * stats["result_complete"] / total, 2),
+            "result_not_found_pct": round(100 * stats["result_not_found"] / total, 2),
+            "result_timeout_pct": round(100 * stats["result_timeout"] / total, 2),
+        }
+
+    def _bump_stat(self, key: str, delta: int = 1) -> None:
+        """Thread-safe counter increment."""
+        with self._stats_lock:
+            self._stats[key] = self._stats.get(key, 0) + delta
 
     def _get_lock(self, market_id: str) -> threading.Lock:
         with self._locks_dict_lock:
@@ -312,9 +358,12 @@ class MarketMetadataResolver:
         """
         t0 = self._clock()
         deadline = t0 + (deadline_s if deadline_s is not None else self._resolve_timeout_s)
+        self._bump_stat("total_calls")
 
         # Blacklist short-circuit — never hit the network for a known-NOT_FOUND.
         if self._is_blacklisted(market_id):
+            self._bump_stat("blacklist_hits")
+            self._bump_stat("result_not_found")
             return ResolveResult(
                 status="MARKET_METADATA_NOT_FOUND",
                 market_id=market_id,
@@ -327,6 +376,8 @@ class MarketMetadataResolver:
         # Try to acquire the per-market lock with the remaining budget.
         remaining = max(0.0, deadline - self._clock())
         if not lock.acquire(timeout=remaining):
+            self._bump_stat("lock_timeouts")
+            self._bump_stat("result_timeout")
             return ResolveResult(
                 status="MARKET_METADATA_TIMEOUT",
                 market_id=market_id,
@@ -337,6 +388,8 @@ class MarketMetadataResolver:
             # Re-check blacklist + cache after lock (other thread may have
             # populated it while we were waiting).
             if self._is_blacklisted(market_id):
+                self._bump_stat("blacklist_hits")
+                self._bump_stat("result_not_found")
                 return ResolveResult(
                     status="MARKET_METADATA_NOT_FOUND",
                     market_id=market_id,
@@ -352,13 +405,24 @@ class MarketMetadataResolver:
                 and dynamic is not None
                 and not force_fresh_pricing
             ):
-                return self._build_result(
+                self._bump_stat("cache_full_hits")
+                result = self._build_result(
                     market_id, t0, static, dynamic, cache_hit=True,
                 )
+                # Track terminal status
+                if result.status == "COMPLETE":
+                    self._bump_stat("result_complete")
+                elif result.status == "PARTIAL_NO_ORDERBOOK":
+                    self._bump_stat("result_partial_no_orderbook")
+                return result
+
+            self._bump_stat("cache_partial_misses")
 
             # Need to fetch. Ensure rate budget allows it.
             remaining = max(0.0, deadline - self._clock())
             if not self._bucket.try_acquire(timeout_s=remaining):
+                self._bump_stat("rate_limit_timeouts")
+                self._bump_stat("result_timeout")
                 return ResolveResult(
                     status="MARKET_METADATA_TIMEOUT",
                     market_id=market_id,
@@ -367,9 +431,12 @@ class MarketMetadataResolver:
                 )
 
             # 1. Gamma fetch (static + light dynamic)
+            self._bump_stat("gamma_fetches")
             try:
                 gamma_doc = self._gamma.fetch_market_by_condition(market_id)
             except Exception as exc:
+                self._bump_stat("gamma_errors")
+                self._bump_stat("result_fetch_failed")
                 return ResolveResult(
                     status="MARKET_METADATA_FETCH_FAILED",
                     market_id=market_id,
@@ -378,6 +445,9 @@ class MarketMetadataResolver:
                 )
             if not gamma_doc:
                 # Gamma confirms not-found — blacklist for 1h.
+                self._bump_stat("gamma_empty")
+                self._bump_stat("blacklist_adds")
+                self._bump_stat("result_not_found")
                 self._blacklist_not_found(market_id)
                 return ResolveResult(
                     status="MARKET_METADATA_NOT_FOUND",
@@ -394,6 +464,7 @@ class MarketMetadataResolver:
             if remaining > 0.05 and self._clob is not None:
                 token_ids = static_data.get("clob_token_ids") or []
                 if isinstance(token_ids, list) and token_ids:
+                    self._bump_stat("clob_fetches")
                     try:
                         # Use the first outcome's token for bid/ask
                         # midpoint. Realistic enough for orderbook_quality
@@ -401,6 +472,7 @@ class MarketMetadataResolver:
                         ob = self._clob.fetch_orderbook(token_ids[0])
                         orderbook_data = _classify_orderbook(ob)
                     except Exception as exc:
+                        self._bump_stat("clob_errors")
                         orderbook_data = {"error": f"clob_exception: {exc}"}
 
             # 3. Dynamic data
@@ -411,7 +483,9 @@ class MarketMetadataResolver:
             if session is not None:
                 try:
                     _upsert_market_row(session, market_id, static_data, dynamic_data)
+                    self._bump_stat("upsert_success")
                 except Exception as exc:
+                    self._bump_stat("upsert_fails")
                     logger.warning("market upsert failed for %s: %s", market_id, exc)
 
             # 5. Build result
@@ -420,6 +494,11 @@ class MarketMetadataResolver:
             )
             if not result.has_orderbook:
                 result.status = "PARTIAL_NO_ORDERBOOK" if result.status == "COMPLETE" else result.status
+            # Track terminal status
+            if result.status == "COMPLETE":
+                self._bump_stat("result_complete")
+            elif result.status == "PARTIAL_NO_ORDERBOOK":
+                self._bump_stat("result_partial_no_orderbook")
             return result
         finally:
             lock.release()

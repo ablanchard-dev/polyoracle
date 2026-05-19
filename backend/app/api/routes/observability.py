@@ -236,14 +236,16 @@ def scheduler_status() -> dict[str, Any]:
 
 @router.get("/resolver")
 def resolver_status() -> dict[str, Any]:
-    """Market metadata resolver cache stats."""
+    """Market metadata resolver cache + stats. P0-E observability."""
     from app.services.market_metadata_resolver import (
         DYNAMIC_DATA_TTL_S,
         NOT_FOUND_BLACKLIST_TTL_S,
         STATIC_METADATA_TTL_S,
+        RESOLVE_TIMEOUT_S,
         get_resolver,
     )
     resolver = get_resolver()
+    stats = resolver.get_stats() if hasattr(resolver, "get_stats") else {}
     return {
         "static_cache_size": len(resolver._static_cache),
         "dynamic_cache_size": len(resolver._dynamic_cache),
@@ -252,7 +254,9 @@ def resolver_status() -> dict[str, Any]:
             "static_s": STATIC_METADATA_TTL_S,
             "dynamic_s": DYNAMIC_DATA_TTL_S,
             "not_found_s": NOT_FOUND_BLACKLIST_TTL_S,
+            "resolve_timeout_s": RESOLVE_TIMEOUT_S,
         },
+        "stats": stats,
     }
 
 
