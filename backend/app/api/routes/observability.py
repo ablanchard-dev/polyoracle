@@ -75,6 +75,28 @@ def workers_status() -> dict[str, Any]:
         result["polls_with_trade"] = with_t
         result["polls_without_trade"] = without_t
         result["hit_rate_pct"] = round(100*with_t/(with_t+without_t), 2) if (with_t+without_t) else 0
+        # P0-D 2026-05-19 — two-stage audit queue stats
+        from app.services import polling_two_stage as _pts
+        audit_q = getattr(eng, "_audit_queue", None)
+        audit_p = getattr(eng, "_audit_pool", None)
+        result["two_stage_enabled"] = _pts.is_enabled()
+        if audit_q is not None:
+            result["audit_queue"] = {
+                "qsize": audit_q.qsize(),
+                "maxsize": audit_q.maxsize,
+                "kill_threshold": audit_q.kill_threshold,
+                "enqueued": audit_q.stats.get("enqueued", 0),
+                "dropped_full": audit_q.stats.get("dropped_full", 0),
+                "dequeued": audit_q.stats.get("dequeued", 0),
+                "kill_threshold_hits": audit_q.stats.get("kill_threshold_hits", 0),
+            }
+        if audit_p is not None:
+            result["audit_pool"] = {
+                "n_workers": audit_p.n_workers,
+                "processed": audit_p.stats.get("processed", 0),
+                "errors": audit_p.stats.get("errors", 0),
+                "phase_total_s": audit_p.stats.get("phase_total_s", {}),
+            }
         return result
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}

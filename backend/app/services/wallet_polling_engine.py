@@ -42,6 +42,7 @@ Safety:
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import logging
 import os
@@ -256,6 +257,9 @@ class WalletPollingEngine:
         self.bucket = TokenBucket(POLLING_RATE_LIMIT_CALLS_PER_SEC)
         self._task: asyncio.Task[Any] | None = None
         self._stop_event: asyncio.Event | None = None
+        # P0-D 2026-05-19 — two-stage audit queue (None if flag off)
+        self._audit_queue: Any = None
+        self._audit_pool: Any = None
         # Silent-stall watchdog — `_iteration_heartbeat` is updated at the
         # top of every run_loop iteration (in-memory, no DB write so it
         # can't be blocked by SQLite locks). The `_watchdog_task` checks
@@ -855,17 +859,34 @@ class WalletPollingEngine:
             return 0
         rows.sort(key=lambda r: int(r.get("timestamp") or 0))
         new_trades = 0
+        # P0-D 2026-05-19 — two-stage mode: enqueue events for async audit
+        # workers instead of processing inline. Frees the poller from audit
+        # cost (~510ms with trade) to keep workers near rate cap 18/s.
+        from app.services import polling_two_stage as _pts
+        two_stage = _pts.is_enabled() and self._audit_queue is not None
         for raw in rows:
             ts = int(raw.get("timestamp") or 0)
             normalized = self._raw_to_audit_input(raw, address)
             # P0-B 2026-05-18 — log-only delay observer (no-op if flag off).
-            # Pass the RAW Polymarket dict (has `timestamp`, `proxyWallet`) for
-            # source_trade_ts capture; the normalized dict drops `timestamp`.
             from app.services import polling_delay_observer as _pdo
             _obs = _pdo.start_observation({**raw, "wallet_address": address})
             result = None
             try:
-                result = await asyncio.to_thread(self._process_trade_in_session, normalized)
+                if two_stage:
+                    # Stage 1: just enqueue. Stage 2 audit worker handles
+                    # _process_trade_in_session async. Observer finalized
+                    # at enqueue time (decision_outcome="QUEUED"), audit
+                    # worker can still update via contextvar if needed.
+                    enqueued = await self._audit_queue.put_nowait_drop({
+                        "raw": raw,
+                        "normalized": normalized,
+                        "address": address,
+                        "ts": ts,
+                        "first_seen_at_ms": int(time.time() * 1000),
+                    })
+                    result = {"executed": False, "queued": enqueued, "two_stage": True}
+                else:
+                    result = await asyncio.to_thread(self._process_trade_in_session, normalized)
             finally:
                 _pdo.finalize_from_result(_obs, result)
             new_trades += 1
@@ -1276,6 +1297,38 @@ class WalletPollingEngine:
             # Expose pool for observability endpoint
             self._worker_pool = pool
 
+            # P0-D 2026-05-19 — two-stage audit workers (if flag on).
+            # Pollers enqueue events instead of calling _process_trade_in_session
+            # inline. This frees pollers from audit_trade DB cost (~380ms p50)
+            # which was taking ~50% of worker poll_func time.
+            from app.services import polling_two_stage as _pts
+            if _pts.is_enabled():
+                self._audit_queue = _pts.AuditQueue(
+                    maxsize=_pts.queue_maxsize(),
+                    kill_threshold=_pts.DEFAULT_KILL_THRESHOLD,
+                )
+
+                async def audit_process(event: dict[str, Any]) -> None:
+                    """Stage 2: process the dequeued event. Calls
+                    _process_trade_in_session UNCHANGED — same audit, signal,
+                    paper engine, idempotency, gates. Just executed by a
+                    separate worker pool, not inline with polling."""
+                    normalized = event.get("normalized")
+                    if normalized is None:
+                        return
+                    await asyncio.to_thread(self._process_trade_in_session, normalized)
+
+                self._audit_pool = _pts.AuditWorkerPool(
+                    queue=self._audit_queue,
+                    process_func=audit_process,
+                    n_workers=_pts.audit_workers_count(),
+                )
+                logger.info("P0-D two-stage : audit pool %d workers, queue maxsize %d",
+                            _pts.audit_workers_count(), _pts.queue_maxsize())
+            else:
+                self._audit_queue = None
+                self._audit_pool = None
+
             # Background tasks (NOT in workers): close-loops + DB counter +
             # lane refresh + heartbeat tick for watchdog.
             stop_bg = asyncio.Event()
@@ -1316,6 +1369,9 @@ class WalletPollingEngine:
                 asyncio.create_task(bg_db_counter(), name="bg_db_counter"),
                 asyncio.create_task(bg_heartbeat(), name="bg_heartbeat"),
             ]
+            # Start audit pool FIRST (so consumers ready before pollers enqueue)
+            if self._audit_pool is not None:
+                await self._audit_pool.start()
             await pool.start()
 
             try:
@@ -1326,6 +1382,9 @@ class WalletPollingEngine:
                 logger.info("P0-B workers: stopping...")
                 stop_bg.set()
                 await pool.stop()
+                # Stop audit pool AFTER pollers (so no new events enqueued)
+                if self._audit_pool is not None:
+                    await self._audit_pool.stop()
                 for t in bg_tasks:
                     if not t.done():
                         t.cancel()
