@@ -60,6 +60,21 @@ def workers_status() -> dict[str, Any]:
             result["queue_size_by_lane"] = sched_or_queue.size_by_lane()
         if hasattr(sched_or_queue, "served_by_lane"):
             result["served_by_lane"] = sched_or_queue.served_by_lane()
+        # P0-C waterfall : compute average phase ms per poll
+        phases = pool.stats.get("phase_total_s")
+        polls = pool.stats.get("polls_done", 0) or 1
+        if phases:
+            result["phase_avg_ms"] = {k: round(1000*v/polls, 2) for k, v in phases.items()}
+            result["phase_total_s"] = {k: round(v, 2) for k, v in phases.items()}
+        with_t = pool.stats.get("polls_with_trade", 0)
+        without_t = pool.stats.get("polls_without_trade", 0)
+        if with_t > 0:
+            result["poll_func_avg_ms_with_trade"] = round(1000*pool.stats.get("poll_func_s_with_trade",0)/with_t, 2)
+        if without_t > 0:
+            result["poll_func_avg_ms_without_trade"] = round(1000*pool.stats.get("poll_func_s_without_trade",0)/without_t, 2)
+        result["polls_with_trade"] = with_t
+        result["polls_without_trade"] = without_t
+        result["hit_rate_pct"] = round(100*with_t/(with_t+without_t), 2) if (with_t+without_t) else 0
         return result
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}

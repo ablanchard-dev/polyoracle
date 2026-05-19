@@ -180,17 +180,36 @@ class WrrScheduler:
 
 @dataclass
 class WrrWorkerPool:
-    """N workers consuming a WrrScheduler. Same API as v1 WorkerPool."""
+    """N workers consuming a WrrScheduler. Same API as v1 WorkerPool.
+
+    P0-C 2026-05-19 — phase timing instrumentation. ``stats["phase_total_s"]``
+    accumulates seconds across all polls per phase:
+    - ``wait_token`` : time spent in ``rate_limiter.acquire()``
+    - ``poll_func`` : time spent in poll_func (fetch + process trades + DB)
+    - ``requeue`` : time spent in ``scheduler.put`` requeue
+    Divide by ``polls_done`` to get avg phase ms per poll. Used to drill
+    bottleneck (P0-C cadence chantier).
+    """
     scheduler: WrrScheduler
     rate_limiter: Any
     poll_func: Callable[[str], Awaitable[Any]]
     interval_func: Callable[[str], float]
     n_workers: int = DEFAULT_WORKERS
-    stats: dict[str, Any] = field(default_factory=lambda: {"polls_done": 0, "errors": 0, "by_lane": {"HOT": 0, "WARM": 0, "COLD": 0}})
+    stats: dict[str, Any] = field(default_factory=lambda: {
+        "polls_done": 0,
+        "errors": 0,
+        "by_lane": {"HOT": 0, "WARM": 0, "COLD": 0},
+        "phase_total_s": {"wait_token": 0.0, "poll_func": 0.0, "requeue": 0.0},
+        "polls_with_trade": 0,
+        "polls_without_trade": 0,
+        "poll_func_s_with_trade": 0.0,
+        "poll_func_s_without_trade": 0.0,
+    })
     _tasks: list[asyncio.Task] = field(default_factory=list)
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def _worker(self, worker_id: int) -> None:
+        import time as _time
         logger.info("wrr_worker %d started", worker_id)
         try:
             while not self._stop_event.is_set():
@@ -199,11 +218,28 @@ class WrrWorkerPool:
                 except asyncio.CancelledError:
                     break
                 try:
+                    t0 = _time.perf_counter()
                     await self.rate_limiter.acquire()
-                    await self.poll_func(addr)
+                    t1 = _time.perf_counter()
+                    poll_result = await self.poll_func(addr)
+                    t2 = _time.perf_counter()
+                    # Accumulate phase times + counters
+                    self.stats["phase_total_s"]["wait_token"] += t1 - t0
+                    poll_duration = t2 - t1
+                    self.stats["phase_total_s"]["poll_func"] += poll_duration
                     self.stats["polls_done"] += 1
                     self.stats["by_lane"].setdefault(lane, 0)
                     self.stats["by_lane"][lane] += 1
+                    # Distinguish polls that returned new trades vs empty polls.
+                    # poll_func currently returns None; we infer trade detection
+                    # from runtime side-effects via duration heuristic if needed.
+                    # For now classify by duration : >250ms likely has trade work.
+                    if poll_duration > 0.25:
+                        self.stats["polls_with_trade"] += 1
+                        self.stats["poll_func_s_with_trade"] += poll_duration
+                    else:
+                        self.stats["polls_without_trade"] += 1
+                        self.stats["poll_func_s_without_trade"] += poll_duration
                 except Exception as exc:
                     self.stats["errors"] += 1
                     logger.warning(
@@ -212,9 +248,12 @@ class WrrWorkerPool:
                     )
                 finally:
                     try:
+                        t3 = _time.perf_counter()
                         interval = self.interval_func(lane)
                         next_due = asyncio.get_event_loop().time() + interval
                         await self.scheduler.put(addr, lane, next_due)
+                        t4 = _time.perf_counter()
+                        self.stats["phase_total_s"]["requeue"] += t4 - t3
                     except Exception as exc:
                         logger.warning("wrr_worker requeue err worker=%d wallet=%s err=%r", worker_id, addr, exc)
         finally:
