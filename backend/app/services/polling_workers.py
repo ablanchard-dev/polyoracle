@@ -188,7 +188,9 @@ class WorkerPool:
                 except asyncio.CancelledError:
                     break
                 try:
-                    await self.rate_limiter.acquire()
+                    # P0-D 2026-05-19 fix double-rate-limiter : rate cap
+                    # enforced inside fetch_recent_activity. See
+                    # polling_workers_wrr._worker for full rationale.
                     await self.poll_func(addr)
                     self.stats["polls_done"] += 1
                     self.stats["by_lane"].setdefault(lane, 0)

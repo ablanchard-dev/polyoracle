@@ -146,12 +146,15 @@ async def test_warm_not_starved_in_long_run():
 
 @pytest.mark.asyncio
 async def test_worker_pool_rate_limit_respected():
-    """8 workers + 18 tok/s bucket → never > 18 calls/s observed."""
+    """P0-D fix : rate cap enforced INSIDE poll_func (i.e. fetch_recent_activity
+    in prod), not in WorkerPool dispatcher. Test simulates that by having
+    poll_func itself acquire from the bucket."""
     q = LanePriorityQueue()
     bucket = TokenBucket(rate_per_sec=18, capacity=18)
     call_times: list[float] = []
 
     async def fake_poll(addr: str) -> None:
+        await bucket.acquire()  # Simulate fetch_recent_activity rate gate
         call_times.append(time.perf_counter())
 
     pool = WorkerPool(

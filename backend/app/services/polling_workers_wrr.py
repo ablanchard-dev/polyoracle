@@ -218,9 +218,16 @@ class WrrWorkerPool:
                 except asyncio.CancelledError:
                     break
                 try:
+                    # P0-D 2026-05-19 fix double-rate-limiter : the rate cap
+                    # is enforced INSIDE fetch_recent_activity (which makes
+                    # the actual Polymarket API call). Acquiring here too
+                    # consumed 2 tokens per poll → effective cap 9/s instead
+                    # of 18/s. Now wait_token measures only the dispatch
+                    # latency (should be ~0) ; the real API rate cap lives
+                    # at the call site. rate_limiter kept for legacy/test
+                    # API surface but no acquire here.
                     t0 = _time.perf_counter()
-                    await self.rate_limiter.acquire()
-                    t1 = _time.perf_counter()
+                    t1 = t0  # no token acquire here
                     poll_result = await self.poll_func(addr)
                     t2 = _time.perf_counter()
                     # Accumulate phase times + counters

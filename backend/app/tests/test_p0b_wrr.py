@@ -77,13 +77,17 @@ async def test_wrr_serves_all_lanes_even_with_hot_dominant():
 
 
 @pytest.mark.asyncio
-async def test_wrr_rate_cap_respected():
-    """Workers respect global rate cap via TokenBucket."""
+async def test_wrr_rate_cap_respected_via_poll_func():
+    """P0-D fix : rate cap enforced INSIDE poll_func (i.e. fetch_recent_activity
+    in prod), not in WrrWorkerPool dispatcher. This test simulates that by
+    having poll_func itself acquire from the bucket."""
     sched = WrrScheduler(47, 47, 6)
     bucket = TokenBucket(rate_per_sec=18, capacity=18)
     times = []
 
     async def fake_poll(addr: str) -> None:
+        # Simulate fetch_recent_activity: acquire token, then make API call.
+        await bucket.acquire()
         times.append(time.perf_counter())
 
     pool = WrrWorkerPool(
@@ -108,14 +112,49 @@ async def test_wrr_rate_cap_respected():
 
 
 @pytest.mark.asyncio
+async def test_wrr_dispatcher_no_token_consumption():
+    """P0-D regression test : WrrWorkerPool dispatcher must NOT acquire
+    tokens itself. If it did, 1 poll would cost 2 tokens (one in dispatcher,
+    one in fetch_recent_activity), halving effective cadence.
+
+    With dispatcher NOT acquiring + poll_func that doesn't acquire either,
+    we should see ~unlimited polls/s (limited only by asyncio overhead)."""
+    sched = WrrScheduler(47, 47, 6)
+    bucket = TokenBucket(rate_per_sec=18, capacity=18)
+    count = {"n": 0}
+
+    async def fake_poll_no_acquire(addr: str) -> None:
+        # NO bucket.acquire() — proves dispatcher doesn't gate
+        count["n"] += 1
+
+    pool = WrrWorkerPool(
+        scheduler=sched, rate_limiter=bucket, poll_func=fake_poll_no_acquire,
+        interval_func=lambda lane: 0.001,  # ultra-fast requeue
+        n_workers=4,
+    )
+    now = asyncio.get_event_loop().time()
+    for i in range(20):
+        await sched.put(f"0xH{i}", "HOT", now)
+    await pool.start()
+    await asyncio.sleep(0.3)
+    await pool.stop()
+    # Without rate limit, should easily exceed 18 × 0.3 = 5.4 (the old cap)
+    assert count["n"] > 50, f"dispatcher unexpectedly throttling: {count['n']} polls in 0.3s"
+
+
+@pytest.mark.asyncio
 async def test_wrr_proportional_distribution():
-    """Distribution polls approximate weighted share over long run."""
+    """Distribution polls approximate weighted share over long run.
+    Post-P0-D fix: poll_func acquires from bucket (simulates fetch_recent_activity
+    rate gate). Without this, workers cycle so fast deficit calculation can't
+    converge to weighted distribution."""
     sched = WrrScheduler(50, 30, 20)
     bucket = TokenBucket(rate_per_sec=200, capacity=200)
     served_per_lane = Counter()
 
     async def fake_poll(addr: str) -> None:
-        pass
+        # Simulate real fetch_recent_activity : rate-limited API call.
+        await bucket.acquire()
 
     pool = WrrWorkerPool(
         scheduler=sched, rate_limiter=bucket, poll_func=fake_poll,
