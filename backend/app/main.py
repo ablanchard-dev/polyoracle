@@ -148,6 +148,62 @@ async def on_startup() -> None:
             type(_bootexc).__name__, _bootexc,
         )
 
+    # v0.7.9 (2026-05-20) — Polymarket WebSocket orderbook subscription service.
+    # Push sub-100ms orderbook updates for tokens the bot polls. Feeds the
+    # clob_executor.get_executable_price() cache for live FAK orders.
+    print("[BOOT] ws_orderbook startup hook entered", flush=True)
+    try:
+        from app.services.polymarket_ws_orderbook import (
+            WSOrderbookService, is_ws_enabled,
+        )
+        print(f"[BOOT] ws import OK, is_ws_enabled()={is_ws_enabled()}", flush=True)
+        if is_ws_enabled():
+            ws_svc = WSOrderbookService.from_env()
+            print(f"[BOOT] WSOrderbookService.from_env() OK max_tokens={ws_svc.max_tokens}", flush=True)
+            await ws_svc.start()
+            print(f"[BOOT] ws_svc.start() returned, singleton check...", flush=True)
+            from app.services.polymarket_ws_orderbook import get_orderbook_service
+            sing = get_orderbook_service()
+            print(f"[BOOT] singleton after start: {sing}", flush=True)
+            # Initial subscribe : tokens from currently-active markets
+            try:
+                from sqlmodel import Session, text
+                from app.database import engine as _db_engine
+                import json as _json
+                with Session(_db_engine) as _s:
+                    rows = _s.exec(text(
+                        "SELECT clob_token_ids FROM market WHERE active=1 "
+                        "AND deadline > datetime('now', '+5 minutes') "
+                        "ORDER BY updated_at DESC LIMIT 200"
+                    )).all()
+                    tokens: list[str] = []
+                    for (toks,) in rows:
+                        try:
+                            for t in _json.loads(toks):
+                                tokens.append(str(t))
+                        except Exception:
+                            pass
+                    if tokens:
+                        ws_svc.subscribe(tokens[:400])
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "ws_orderbook initial subscribe: %d tokens", len(tokens[:400])
+                        )
+            except Exception as _wsboot:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "ws_orderbook initial subscribe failed: %s: %s",
+                    type(_wsboot).__name__, _wsboot,
+                )
+    except Exception as _wsexc:
+        import logging, traceback
+        print(f"[BOOT] !! ws_orderbook FAIL: {type(_wsexc).__name__}: {_wsexc}", flush=True)
+        traceback.print_exc()
+        logging.getLogger(__name__).warning(
+            "ws_orderbook service failed to launch: %s: %s",
+            type(_wsexc).__name__, _wsexc,
+        )
+
     # 2026-05-14 CLOB retry worker (Round 9 review strict-compatible fix).
     # Re-test orderbook BAD/UNTRADABLE candidates every ~5s; if CLOB book
     # becomes GOOD/ACCEPTABLE and every strict gate still passes, the trade

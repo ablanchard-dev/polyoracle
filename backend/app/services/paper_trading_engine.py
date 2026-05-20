@@ -1922,104 +1922,141 @@ class PaperTradingEngine:
                 # verify but also cannot prove violation.
                 pass
 
-        # v0.7.8 — re-fetch live market price at open time. This closes a
-        # structural optimism in the paper PnL: opening at the wallet's
-        # frozen traded-at price assumes zero execution latency, which is
-        # never the case (we poll at 90s + Polymarket round-trip). On
-        # ULTRA_SHORT markets the price moves 10-30% in 90s, so the
-        # wallet price is not what a real order would fill at.
+        # v0.7.9 LIVE_READY_STRICT (2026-05-20) — execution parity v2.
+        # 3 modes selon flags env :
+        #   - V2 disabled         → mode "paper" (legacy Gamma path, backward-compat)
+        #   - V2 enabled, LIVE=false → mode "paper_strict_ready" : CLOB VWAP comme price
+        #   - V2 enabled, LIVE=true  → mode "live" : submit FAK puis paper mirror exact
         wallet_signal_price = float(price or 0.0)
-        execution_price, exec_source = self._fetch_execution_price_now(
-            signal.market_id, signal.outcome, side,
-        )
-        if exec_source == "market_resolved":
-            # Market settled between wallet trade and our open — skip.
-            return {
-                "executed": False,
-                "reason": "market_resolved_before_open",
-                "reason_code": "INSUFFICIENT_DATA",
-                "profile": active_profile.name,
-                "wallet_signal_price": wallet_signal_price,
-            }
-        if execution_price is None or execution_price <= 0.0:
-            # Gamma unavailable / outcome not found — fall back to wallet
-            # price so we don't lose the trade entirely, but flag the
-            # source explicitly so the operator sees the bias risk.
-            execution_price = wallet_signal_price
-            exec_source = "wallet_frozen_fallback"
+        live_result = None
+        execution_price = None
+        exec_source = "UNKNOWN"
+        filled_shares_live = None
+        filled_notional_live = None
+        _gamma_mid_for_ref = None
+        _gamma_src = None
 
-        latency_drift = round(execution_price - wallet_signal_price, 6)
-
-        # P0.4 (Round 8): build the entry-price provenance dict for EntryPriceAudit.
-        # We capture everything we have at this point:
-        #   - raw_signal_price = wallet's traded price (source we copied)
-        #   - gamma_mid_at_open = the re-fetched live Gamma price
-        #   - entry_price_source = where the chosen price comes from
-        #   - confidence based on whether re-fetch succeeded
-        # CLOB best_bid/ask remain None — Polymarket CLOB is 404 on the crypto 5min
-        # markets that dominate our flow. live_shadow is computed from gamma+spread/2.
-        _audit_data: dict = {
-            "raw_signal_price": wallet_signal_price,
-            "gamma_mid_at_open": execution_price if exec_source == "gamma_refetched" else None,
-            "clob_best_bid_at_open": None,
-            "clob_best_ask_at_open": None,
-            "spread_at_open": spread,
-            "liquidity_score_at_open": audit_context.get("liquidity_score"),
-            "entry_price_source": (
-                "GAMMA" if exec_source == "gamma_refetched"
-                else "WALLET_FROZEN_FALLBACK" if exec_source == "wallet_frozen_fallback"
-                else "UNKNOWN"
-            ),
-            "price_source_confidence": (
-                "HIGH" if exec_source == "gamma_refetched"
-                else "LOW"
-            ),
-            "source_trade_id": audit_context.get("source_trade_id"),
-            "source_wallet": audit_context.get("wallet"),
-        }
-
-        # Use the LIVE price for sizing the position.
-        quantity = size_usd / max(execution_price or 1, 0.01)
-
-        # 2026-05-17 — LIVE bridge : si LIVE_ENABLED=true, send vrai ordre CLOB.
-        # Sinon, paper comme avant. MÊME logique de décision en amont (signals,
-        # audit, cluster, R-sizing) — seule l'exécution change.
         try:
             from app.services.live_executor_bridge import decide_and_place_live
+            from app.services.clob_executor import is_v2_enabled, is_strict_enabled
+        except Exception:
+            is_v2_enabled = lambda: False
+            is_strict_enabled = lambda: False
+            decide_and_place_live = None
+
+        if is_v2_enabled() and decide_and_place_live is not None:
+            # Compute gamma mid for slippage cap reference (helper still used here)
+            _gamma_mid_for_ref, _gamma_src = self._fetch_execution_price_now(
+                signal.market_id, signal.outcome, side,
+            )
+            if _gamma_src == "market_resolved":
+                return {
+                    "executed": False,
+                    "reason": "market_resolved_before_open",
+                    "reason_code": "INSUFFICIENT_DATA",
+                    "profile": active_profile.name,
+                    "wallet_signal_price": wallet_signal_price,
+                }
             live_result = decide_and_place_live(
                 session=self.session,
                 market_id=signal.market_id,
                 outcome=signal.outcome,
                 side=side.upper(),
-                price=execution_price,
-                notional_usd=size_usd,
+                notional_usd=float(size_usd),
+                gamma_mid_reference=_gamma_mid_for_ref,
                 signal_id=signal.id,
                 wallet_address=audit_context.get("wallet"),
             )
-        except Exception as _e:
-            # Bridge totally broken — log + fallback paper to not crash bot
-            try:
-                import logging as _lg
-                _lg.getLogger(__name__).error(f"live bridge error: {type(_e).__name__}: {_e}")
-            except Exception:
-                pass
-            live_result = {"mode": "paper", "success": True, "skip_reason": "BRIDGE_ERROR"}
+            mode = live_result.get("mode", "")
+            if mode == "skip":
+                return {
+                    "executed": False,
+                    "reason": live_result.get("skip_reason", "LIVE_SKIP"),
+                    "reason_code": "CLOB_NOT_LIVE_FILLABLE",
+                    "profile": active_profile.name,
+                    "live_result": live_result,
+                }
+            if mode == "live":
+                execution_price = float(live_result["avg_fill_price"])
+                filled_shares_live = float(live_result["filled_shares"])
+                filled_notional_live = float(live_result["filled_notional"])
+                exec_source = "CLOB_FAK_LIVE_FILL"
+            elif mode == "paper_strict_ready":
+                execution_price = float(live_result["vwap_price"])
+                exec_source = "CLOB_VWAP_PAPER_STRICT"
+            elif mode == "paper":
+                execution_price = _gamma_mid_for_ref
+                exec_source = _gamma_src if _gamma_src else "GAMMA_LEGACY_FALLBACK"
+        else:
+            # V2 not loaded → legacy gamma path
+            execution_price, exec_source = self._fetch_execution_price_now(
+                signal.market_id, signal.outcome, side,
+            )
+            if exec_source == "market_resolved":
+                return {
+                    "executed": False,
+                    "reason": "market_resolved_before_open",
+                    "reason_code": "INSUFFICIENT_DATA",
+                    "profile": active_profile.name,
+                    "wallet_signal_price": wallet_signal_price,
+                }
 
-        if live_result.get("mode") == "skip":
-            # LIVE failed (rate limit, CLOB reject, token unresolvable). NE PAS
-            # fallback paper (= éviter divergence comptable paper/live).
-            return {
-                "executed": False,
-                "reason": f"LIVE_SKIP: {live_result.get('skip_reason')}",
-                "reason_code": "LIVE_REJECT",
-                "error": live_result.get("error"),
-            }
+        # Final guard
+        if execution_price is None or execution_price <= 0.0:
+            if is_strict_enabled():
+                return {
+                    "executed": False,
+                    "reason": "NO_EXECUTABLE_PRICE_STRICT_MODE",
+                    "reason_code": "CLOB_NOT_LIVE_FILLABLE",
+                    "profile": active_profile.name,
+                }
+            execution_price = wallet_signal_price
+            exec_source = "wallet_frozen_fallback"
 
-        # Tag audit_data with live info (if any)
-        if live_result.get("mode") == "live":
-            _audit_data["live_executed"] = True
-            _audit_data["live_order_id"] = live_result.get("order_id")
-            _audit_data["live_fill_price"] = live_result.get("fill_price")
+        latency_drift = round(execution_price - wallet_signal_price, 6)
+
+        _audit_data: dict = {
+            "raw_signal_price": wallet_signal_price,
+            "gamma_mid_at_open": (
+                _gamma_mid_for_ref if exec_source in (
+                    "CLOB_VWAP_PAPER_STRICT", "CLOB_FAK_LIVE_FILL",
+                    "gamma_refetched", "GAMMA_LEGACY_FALLBACK",
+                ) else None
+            ),
+            "clob_vwap_at_open": (
+                execution_price if exec_source in ("CLOB_VWAP_PAPER_STRICT", "CLOB_FAK_LIVE_FILL")
+                else None
+            ),
+            "clob_best_bid_at_open": None,
+            "clob_best_ask_at_open": None,
+            "spread_at_open": spread,
+            "liquidity_score_at_open": audit_context.get("liquidity_score"),
+            "entry_price_source": exec_source,
+            "price_source_confidence": (
+                "HIGH" if exec_source.startswith("CLOB_") else "LOW"
+            ),
+            "source_trade_id": audit_context.get("source_trade_id"),
+            "source_wallet": audit_context.get("wallet"),
+            "live_executed": bool(live_result and live_result.get("mode") == "live"),
+            "live_result": live_result if live_result and live_result.get("mode") == "live" else None,
+            "live_order_id": (live_result or {}).get("order_id"),
+            "live_avg_fill_price": (live_result or {}).get("avg_fill_price"),
+            "live_filled_shares": (live_result or {}).get("filled_shares"),
+            "live_filled_notional": (live_result or {}).get("filled_notional"),
+            "live_fees_paid": (live_result or {}).get("fees_paid"),
+            "live_fill_status": (live_result or {}).get("fill_status"),
+            "live_latency_ms": (live_result or {}).get("latency_ms"),
+            "live_vwap_computed": (live_result or {}).get("vwap_computed"),
+            "live_slippage_cap_used": (live_result or {}).get("slippage_cap_used"),
+            "live_price_source": (live_result or {}).get("price_source"),
+        }
+
+        # Quantity finale
+        if filled_shares_live is not None:
+            quantity = filled_shares_live
+            size_usd = filled_notional_live
+        else:
+            quantity = size_usd / max(execution_price, 0.01)
 
         trade = self.open_paper_position(
             market_id=signal.market_id,
