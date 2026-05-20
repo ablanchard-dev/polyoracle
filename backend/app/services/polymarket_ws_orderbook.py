@@ -121,30 +121,72 @@ class OrderbookState:
         return (time.time() - self.last_update_ts) <= max_age_s
 
     def compute_vwap_buy(self, notional_usd: float) -> Optional[float]:
-        """Walk asks cheapest first, return worst price level consumed to fill notional_usd."""
+        """TRUE VWAP for a BUY consuming notional_usd of USDC.
+
+        Walk asks cheapest-first, accumulate shares bought at each level.
+        VWAP = notional / total_shares = the price a FAK market order actually
+        averages at. NOT the worst price level (ancien bug 2026-05-20).
+        Returns None if orderbook lacks depth.
+        """
         if not self.asks:
             return None
         sorted_asks = sorted(self.asks.items())  # ascending price (cheapest first)
-        total_value = 0.0
-        last_price = None
+        remaining = notional_usd
+        total_shares = 0.0
         for price, size in sorted_asks:
-            level_value = price * size
-            if total_value + level_value >= notional_usd:
+            if price <= 0:
+                continue
+            level_value = price * size  # USDC available at this level
+            take = min(remaining, level_value)
+            total_shares += take / price
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        if remaining > 1e-9 or total_shares <= 0:
+            return None  # insufficient depth
+        return notional_usd / total_shares
+
+    def compute_worst_price_buy(self, notional_usd: float) -> Optional[float]:
+        """Worst (highest) ask price level touched to fill notional_usd.
+        Slippage-cap reference for FAK live orders (NOT the entry price)."""
+        if not self.asks:
+            return None
+        total_value = 0.0
+        for price, size in sorted(self.asks.items()):
+            total_value += price * size
+            if total_value >= notional_usd:
                 return price
-            total_value += level_value
-            last_price = price
-        return None  # insufficient depth
+        return None
 
     def compute_vwap_sell(self, shares_amount: float) -> Optional[float]:
-        """Walk bids highest first, return worst price level consumed to sell shares."""
+        """TRUE VWAP for a SELL of shares_amount.
+
+        Walk bids highest-first, accumulate USDC received.
+        VWAP = total_usdc / shares_amount. Returns None if depth insufficient."""
         if not self.bids:
             return None
         sorted_bids = sorted(self.bids.items(), reverse=True)  # descending price
-        total_shares = 0.0
+        remaining = shares_amount
+        total_usdc = 0.0
         for price, size in sorted_bids:
-            if total_shares + size >= shares_amount:
-                return price
+            take = min(remaining, size)
+            total_usdc += take * price
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        if remaining > 1e-9 or shares_amount <= 0:
+            return None  # insufficient depth
+        return total_usdc / shares_amount
+
+    def compute_worst_price_sell(self, shares_amount: float) -> Optional[float]:
+        """Worst (lowest) bid price level touched. Slippage-cap ref for SELL."""
+        if not self.bids:
+            return None
+        total_shares = 0.0
+        for price, size in sorted(self.bids.items(), reverse=True):
             total_shares += size
+            if total_shares >= shares_amount:
+                return price
         return None
 
     def has_min_depth(self, side: str, notional_usd: float) -> bool:

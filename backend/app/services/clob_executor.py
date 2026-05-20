@@ -330,32 +330,56 @@ class CLOBExecutor:
                 audit["status"] = "NO_ORDERBOOK"
                 self._bump_stat("no_orderbook")
                 return None, "NO_ORDERBOOK", audit
-            # Polymarket convention : asks list = descending (worst first), best is last
-            iter_levels = reversed(levels)
-            total_value = 0.0
-            last_price = None
-            for lvl in iter_levels:
-                # v2 returns dict per level, v1 returns OrderSummary objects
+            # Normalize levels to (price, size) tuples sorted cheapest-first.
+            # v2 returns dict per level, v1 returns OrderSummary objects.
+            # Polymarket asks list = descending price → reversed = ascending.
+            norm = []
+            for lvl in levels:
                 if isinstance(lvl, dict):
-                    px = float(lvl.get("price", 0))
-                    sz = float(lvl.get("size", 0))
+                    px = float(lvl.get("price", 0) or 0)
+                    sz = float(lvl.get("size", 0) or 0)
                 else:
                     px = float(lvl.price)
                     sz = float(lvl.size)
+                norm.append((px, sz))
+            # BUY consumes asks ascending (cheapest first) ; SELL consumes bids descending
+            norm.sort(key=lambda x: x[0], reverse=(side != "BUY"))
+            # TRUE VWAP : walk levels, accumulate shares, vwap = notional / shares
+            remaining = float(notional_usd)
+            total_shares = 0.0
+            worst_price = None
+            for px, sz in norm:
+                if px <= 0:
+                    continue
                 if side == "BUY":
-                    total_value += sz * px
+                    level_value = px * sz       # USDC available here
+                    take = min(remaining, level_value)
+                    total_shares += take / px
+                    remaining -= take
                 else:
-                    total_value += sz
-                last_price = px
-                if total_value >= notional_usd:
-                    audit["status"] = "OK_FILLABLE"
-                    self._bump_stat("rest_ok_fillable")
-                    audit["vwap_worst_price"] = last_price
-                    return last_price, "OK_FILLABLE", audit
-            audit["status"] = "INSUFFICIENT_DEPTH"
-            audit["total_value_available"] = total_value
-            self._bump_stat("insufficient_depth")
-            return None, "INSUFFICIENT_DEPTH", audit
+                    take = min(remaining, sz)   # shares (remaining in shares for SELL)
+                    total_shares += take * px   # actually USDC for SELL
+                    remaining -= take
+                worst_price = px
+                if remaining <= 1e-9:
+                    break
+            if remaining > 1e-9:
+                audit["status"] = "INSUFFICIENT_DEPTH"
+                self._bump_stat("insufficient_depth")
+                return None, "INSUFFICIENT_DEPTH", audit
+            if side == "BUY":
+                vwap = notional_usd / total_shares if total_shares > 0 else None
+            else:
+                vwap = total_shares / notional_usd if notional_usd > 0 else None
+            if vwap is None or not (0 < vwap < 1):
+                audit["status"] = "INSUFFICIENT_DEPTH"
+                self._bump_stat("insufficient_depth")
+                return None, "INSUFFICIENT_DEPTH", audit
+            audit["status"] = "OK_FILLABLE"
+            audit["vwap"] = vwap
+            audit["worst_price"] = worst_price
+            self._bump_stat("rest_ok_fillable")
+            return vwap, "OK_FILLABLE", audit
         except Exception as exc:
             err = str(exc)
             if "404" in err or "No orderbook" in err or "no match" in err.lower():
