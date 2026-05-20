@@ -558,13 +558,27 @@ class CLOBExecutor:
             )
 
     def _extract_fill_amounts(self, response: dict, side: str) -> tuple[float, float]:
+        """Returns (filled_notional_usd, filled_shares).
+
+        Polymarket order semantics — confirmé via py-clob-client-v2
+        order_builder/builder.py::get_order_amounts (2026-05-20) :
+          BUY  : makerAmount = size*price = USDC donné ; takerAmount = size = shares reçues
+          SELL : makerAmount = shares données ; takerAmount = USDC reçu
+        La réponse post_order makingAmount/takingAmount suit la convention maker/taker.
+
+        FIX 2026-05-20 : l'ancien code retournait l'INVERSE (BUY→taking,making).
+        NOTE : l'échelle (token decimals 1e6 vs unités humaines) + ce mapping
+        DOIVENT être validés empiriquement au E8 $1 avant tout flip live global.
+        """
         try:
             taking = float(response.get("takingAmount", 0) or 0)
             making = float(response.get("makingAmount", 0) or 0)
             if side == "BUY":
-                return taking, making
-            else:
+                # making = USDC dépensé (notional), taking = shares reçues
                 return making, taking
+            else:
+                # SELL : making = shares données, taking = USDC reçu (notional)
+                return taking, making
         except Exception:
             return 0.0, 0.0
 
