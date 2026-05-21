@@ -42,6 +42,15 @@ try:  # observabilité non critique — ne doit jamais casser le service
 except Exception:  # pragma: no cover
     _pdo = None
 
+try:  # WS orderbook — alimenté en continu par les trades détectés ci-dessous
+    from app.services.polymarket_ws_orderbook import (
+        get_orderbook_service as _get_ob_service,
+        is_ws_enabled as _ob_ws_enabled,
+    )
+except Exception:  # pragma: no cover
+    _get_ob_service = None
+    _ob_ws_enabled = None
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -113,6 +122,7 @@ class WSActivityService:
         self.trades_dispatched = 0
         self.paper_executed = 0
         self.queue_dropped = 0
+        self.orderbook_subs = 0
         self.connected_since: Optional[float] = None
         self.last_event_at: Optional[float] = None
         self.last_error: Optional[str] = None
@@ -223,6 +233,29 @@ class WSActivityService:
             self._cohort_refreshed_at = now
         return self._cohort_set
 
+    def _maybe_subscribe_orderbook(self, asset: Any) -> None:
+        """Abonne le WS orderbook au token EXACT de ce trade cohorte.
+
+        Le WS orderbook n'était alimenté qu'une fois au boot (snapshot SQL
+        statique) — inutile pour les marchés crypto-5min qui tournent en
+        continu : au moment où le bot trade, ces marchés sont résolus et les
+        neufs ne sont jamais abonnés → get_cached_orderbook renvoie None →
+        clob_executor retombe sur REST /book qui 404. Ici chaque trade détecté
+        pousse son token_id vers le WS orderbook → book frais pour le pricing.
+        Best-effort, idempotent, jamais bloquant. Le ré-abonnement rafraîchit le
+        TTL côté orderbook (keepalive) ; un marché mort est évincé tout seul."""
+        if _get_ob_service is None or not asset:
+            return
+        if _ob_ws_enabled is not None and not _ob_ws_enabled():
+            return  # WS orderbook désactivé par flag → ne pas accumuler de pending
+        try:
+            svc = _get_ob_service()
+            if svc is not None:
+                svc.subscribe([str(asset)])
+                self.orderbook_subs += 1
+        except Exception:  # pragma: no cover — jamais casser la réception WS
+            pass
+
     def _handle_message(self, raw: Any) -> None:
         if isinstance(raw, (bytes, bytearray)):
             raw = raw.decode("utf-8", "ignore")
@@ -252,6 +285,9 @@ class WSActivityService:
         if not wallet or wallet not in self._get_cohort_set():
             return
         self.trades_matched_cohort += 1
+        # Alimente le WS orderbook en continu : abonne le book du token que ce
+        # wallet cohorte vient de trader (indépendant du dédup / tid ci-dessous).
+        self._maybe_subscribe_orderbook(payload.get("asset"))
         tid = payload.get("transactionHash") or payload.get("id")
         if not tid:
             return
@@ -357,6 +393,7 @@ class WSActivityService:
             "paper_executed": self.paper_executed,
             "queue_size": self._queue.qsize(),
             "queue_dropped": self.queue_dropped,
+            "orderbook_subs": self.orderbook_subs,
             "cohort_size": len(self._cohort_set or ()),
             "last_event_at": self.last_event_at,
             "last_error": self.last_error,

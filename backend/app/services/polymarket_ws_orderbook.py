@@ -41,6 +41,12 @@ MAX_RECONNECT_BACKOFF_S = 60.0
 INITIAL_RECONNECT_BACKOFF_S = 1.0
 DEFAULT_MAX_TOKENS = 500
 DEFAULT_FRESHNESS_THRESHOLD_S = 2.0
+# Éviction TTL : un token non ré-abonné depuis evict_ttl_s est lâché pour
+# libérer un slot. Indispensable sous le churn crypto-5min (marchés neufs en
+# continu) — sinon le cap max_tokens se remplit et bloque tout nouvel abonnement
+# (le service n'a aucune éviction auto, _subscribed ne faisait que croître).
+DEFAULT_EVICT_TTL_S = 1800.0
+EVICT_SWEEP_INTERVAL_S = 60.0
 
 # Flag for v2 live execution rollout
 WS_ENABLED_FLAG = "POLYMARKET_WS_ORDERBOOK_ENABLED"
@@ -231,6 +237,10 @@ class WSOrderbookService:
         self._subscribed: set[str] = set()
         self._pending_subscribe: set[str] = set()
         self._pending_unsubscribe: set[str] = set()
+        self._subscribed_at: dict[str, float] = {}
+        self.evict_ttl_s = float(
+            os.environ.get("POLYMARKET_WS_ORDERBOOK_TTL_S", DEFAULT_EVICT_TTL_S))
+        self._last_evict_ts = 0.0
         self._running = False
         self._stopping = False
         self._ws: Any = None
@@ -240,6 +250,7 @@ class WSOrderbookService:
             "events_received": 0, "book_events": 0, "price_change_events": 0,
             "last_trade_events": 0, "market_resolved_events": 0,
             "reconnects": 0, "subscribe_calls": 0, "rest_snapshot_fetches": 0,
+            "evictions": 0,
             "started_at": 0.0, "last_event_at": 0.0,
         }
 
@@ -286,15 +297,43 @@ class WSOrderbookService:
         logger.info("WSOrderbookService stopped")
 
     def subscribe(self, token_ids: list[str]) -> None:
-        """Add token_ids to subscription. Idempotent. Applied at next loop iter."""
+        """Add token_ids to subscription. Idempotent. Applied at next loop iter.
+
+        Ré-abonner un token déjà suivi rafraîchit son TTL (keepalive) : un marché
+        activement copié reste abonné, un marché mort est évincé par
+        _evict_stale. C'est ce qui permet l'alimentation continue par le service
+        WS activity sans jamais saturer le cap max_tokens."""
+        now = time.time()
         for t in token_ids:
-            if t and t not in self._subscribed and len(self._subscribed) < self.max_tokens:
+            if not t:
+                continue
+            if t in self._subscribed or t in self._pending_subscribe:
+                self._subscribed_at[t] = now  # keepalive TTL
+            elif len(self._subscribed) + len(self._pending_subscribe) < self.max_tokens:
                 self._pending_subscribe.add(t)
+                self._subscribed_at[t] = now
 
     def unsubscribe(self, token_ids: list[str]) -> None:
         for t in token_ids:
             if t in self._subscribed:
                 self._pending_unsubscribe.add(t)
+
+    def _evict_stale(self) -> None:
+        """Évince les tokens non ré-abonnés depuis evict_ttl_s. Libère des slots
+        sous le cap max_tokens — sans ça le churn crypto-5min sature
+        l'abonnement en quelques heures et bloque tout nouveau marché."""
+        now = time.time()
+        dead = [
+            t for t, ts in list(self._subscribed_at.items())
+            if t in self._subscribed and (now - ts) > self.evict_ttl_s
+        ]
+        for t in dead:
+            self._pending_unsubscribe.add(t)
+            self._subscribed_at.pop(t, None)
+        if dead:
+            self._stats["evictions"] += len(dead)
+            logger.info("WSOrderbook: évincé %d tokens TTL-stale (subscribed=%d)",
+                        len(dead), len(self._subscribed) - len(dead))
 
     def get_stats(self) -> dict[str, Any]:
         with _cache_lock:
@@ -304,6 +343,8 @@ class WSOrderbookService:
             **self._stats,
             "running": self._running,
             "subscribed_count": len(self._subscribed),
+            "pending_subscribe": len(self._pending_subscribe),
+            "evict_ttl_s": self.evict_ttl_s,
             "cache_size": cache_size,
             "fresh_count": fresh_count,
             "uptime_s": time.time() - self._stats["started_at"] if self._stats["started_at"] else 0,
@@ -362,9 +403,15 @@ class WSOrderbookService:
                         # we drop messages locally.
                         for t in self._pending_unsubscribe:
                             self._subscribed.discard(t)
+                            self._subscribed_at.pop(t, None)
                             with _cache_lock:
                                 _book_cache.pop(t, None)
                         self._pending_unsubscribe.clear()
+                    # Éviction TTL périodique — libère les slots des marchés morts.
+                    now_evict = time.time()
+                    if now_evict - self._last_evict_ts > EVICT_SWEEP_INTERVAL_S:
+                        self._last_evict_ts = now_evict
+                        self._evict_stale()
             finally:
                 ping_task.cancel()
                 try:
