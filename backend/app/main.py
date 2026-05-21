@@ -140,12 +140,88 @@ async def on_startup() -> None:
                     )
                 await asyncio.sleep(86400)
 
-        asyncio.create_task(_daily_reclass_loop())
+        # REFONTE 2026-05-21 — boucle auto-reclass désactivée par défaut.
+        # Le reclass évalue sur resolved_market_win_rate (WR GLOBAL) alors que
+        # la cohorte refonte est sélectionnée sur l'EV crypto-bande (gate =
+        # copyability_score). Le lancer démoterait les ~3 574 ELITE refonte
+        # (band WR 0.55-0.85 < seuil ELITE 0.90) ET re-promouvrait les ~660
+        # LONG_SLEEVE WR-global → refonte intégralement annulée. À ré-activer
+        # seulement après un redesign EV-based du reclass. L'endpoint manuel
+        # /discovery/reclass/run reste disponible (déclenchement opérateur).
+        import os as _os_reclass
+        if _os_reclass.environ.get("WEEKLY_RECLASS_ENABLED", "0").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            asyncio.create_task(_daily_reclass_loop())
+            logging.getLogger(__name__).warning(
+                "auto-reclass daily: ENABLED via WEEKLY_RECLASS_ENABLED=true"
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "auto-reclass daily: DISABLED (REFONTE 2026-05-21 — cohorte "
+                "EV-based, reclass WR-global obsolète ; flag WEEKLY_RECLASS_ENABLED)"
+            )
     except Exception as _bootexc:
         import logging
         logging.getLogger(__name__).warning(
             "auto-reclass daily failed to launch: %s: %s",
             type(_bootexc).__name__, _bootexc,
+        )
+
+    # v0.7.9 (2026-05-20) — Polymarket WebSocket orderbook subscription service.
+    # Push sub-100ms orderbook updates for tokens the bot polls. Feeds the
+    # clob_executor.get_executable_price() cache for live FAK orders.
+    print("[BOOT] ws_orderbook startup hook entered", flush=True)
+    try:
+        from app.services.polymarket_ws_orderbook import (
+            WSOrderbookService, is_ws_enabled,
+        )
+        print(f"[BOOT] ws import OK, is_ws_enabled()={is_ws_enabled()}", flush=True)
+        if is_ws_enabled():
+            ws_svc = WSOrderbookService.from_env()
+            print(f"[BOOT] WSOrderbookService.from_env() OK max_tokens={ws_svc.max_tokens}", flush=True)
+            await ws_svc.start()
+            print(f"[BOOT] ws_svc.start() returned, singleton check...", flush=True)
+            from app.services.polymarket_ws_orderbook import get_orderbook_service
+            sing = get_orderbook_service()
+            print(f"[BOOT] singleton after start: {sing}", flush=True)
+            # Initial subscribe : tokens from currently-active markets
+            try:
+                from sqlmodel import Session, text
+                from app.database import engine as _db_engine
+                import json as _json
+                with Session(_db_engine) as _s:
+                    rows = _s.exec(text(
+                        "SELECT clob_token_ids FROM market WHERE active=1 "
+                        "AND deadline > datetime('now', '+5 minutes') "
+                        "ORDER BY updated_at DESC LIMIT 200"
+                    )).all()
+                    tokens: list[str] = []
+                    for (toks,) in rows:
+                        try:
+                            for t in _json.loads(toks):
+                                tokens.append(str(t))
+                        except Exception:
+                            pass
+                    if tokens:
+                        ws_svc.subscribe(tokens[:400])
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "ws_orderbook initial subscribe: %d tokens", len(tokens[:400])
+                        )
+            except Exception as _wsboot:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "ws_orderbook initial subscribe failed: %s: %s",
+                    type(_wsboot).__name__, _wsboot,
+                )
+    except Exception as _wsexc:
+        import logging, traceback
+        print(f"[BOOT] !! ws_orderbook FAIL: {type(_wsexc).__name__}: {_wsexc}", flush=True)
+        traceback.print_exc()
+        logging.getLogger(__name__).warning(
+            "ws_orderbook service failed to launch: %s: %s",
+            type(_wsexc).__name__, _wsexc,
         )
 
     # 2026-05-14 CLOB retry worker (Round 9 review strict-compatible fix).
@@ -218,6 +294,38 @@ async def on_startup() -> None:
         logging.getLogger(__name__).warning(
             "stream_pull worker failed to launch: %s: %s",
             type(_bootexc3).__name__, _bootexc3,
+        )
+
+    # WS activity service (REFONTE 2026-05-21) — détection de trades par
+    # WebSocket (RTDS topic `activity`, wss://ws-live-data.polymarket.com).
+    # Push sub-seconde, indépendant de la taille de cohorte. Feature-flag
+    # POLYMARKET_WS_ACTIVITY_ENABLED. Doctrine : coexiste avec stream_pull /
+    # polling per-wallet (ADD coverage, never REMOVE). N'altère ni audit,
+    # ni gates, ni cohort.
+    try:
+        from app.services.polymarket_ws_activity import (
+            init_ws_activity_service,
+            is_ws_activity_enabled,
+        )
+        if is_ws_activity_enabled():
+            from app.services.wallet_polling_engine import WalletPollingEngine
+            _ws_engine = WalletPollingEngine.instance()
+            _ws_act = init_ws_activity_service(_ws_engine)
+            await _ws_act.start()
+            import logging
+            logging.getLogger(__name__).info(
+                "ws_activity: enabled via POLYMARKET_WS_ACTIVITY_ENABLED=true"
+            )
+        else:
+            import logging
+            logging.getLogger(__name__).info(
+                "ws_activity: disabled (POLYMARKET_WS_ACTIVITY_ENABLED=false)"
+            )
+    except Exception as _bootexc_ws:
+        import logging
+        logging.getLogger(__name__).warning(
+            "ws_activity worker failed to launch: %s: %s",
+            type(_bootexc_ws).__name__, _bootexc_ws,
         )
 
     # P0.3 (2026-05-18) — FreshApiEnrichmentService SHADOW.

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -151,8 +152,17 @@ class SignalEngine:
             copyable_edge=audit.copyable_edge,
             notes=json.dumps(score.to_dict()),
         )
-        self.session.merge(signal)
-        self.session.commit()
+        # REFONTE 2026-05-21 — idempotent. Le WS et le polling per-wallet
+        # détectent le même trade en parallèle (2 sessions concurrentes) ;
+        # merge() n'est pas atomique entre sessions → race → UNIQUE constraint
+        # sur signal.id. On capte la collision, rollback, et on reprend la
+        # ligne déjà écrite par l'autre lane. Le double-open est déjà bloqué
+        # en aval par le SignalClusterEngine (DUPLICATE_SAME_WALLET).
+        try:
+            self.session.merge(signal)
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
         return self.session.get(Signal, signal_id) or signal
 
     def build_cluster_signal(self, cluster: TradeCluster) -> Signal:
@@ -176,8 +186,11 @@ class SignalEngine:
             copyable_edge=score.copyable_edge / 100,
             notes=json.dumps(score.to_dict()),
         )
-        self.session.merge(signal)
-        self.session.commit()
+        try:  # REFONTE 2026-05-21 — idempotent (race 2 lanes), cf supra.
+            self.session.merge(signal)
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
         return self.session.get(Signal, signal_id) or signal
 
     def generate_signals_from_recent_audits(self, limit: int = 100) -> list[Signal]:

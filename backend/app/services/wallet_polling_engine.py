@@ -379,11 +379,13 @@ class WalletPollingEngine:
             # NANO/TINY/MICRO accept ELITE GOLD only; SMALL+ adds SILVER; ≥$10k
             # adds BRONZE. STRONG only when GOLD bucket and tier ≥ MEDIUM.
             if _bucket_filter_active:
+                # REFONTE 2026-05-21 : gate sur copyability_score (EV crypto
+                # validée) au lieu du WR global — cohorte EV-based.
                 rows = [
                     r for r in rows
                     if is_wallet_allowed_at_tier(
                         r.candidate_status,
-                        r.resolved_market_win_rate,
+                        r.copyability_score,
                         float(capital_total),
                     )
                 ]
@@ -394,7 +396,7 @@ class WalletPollingEngine:
                 p = 0.0
                 if (r.candidate_status or "") == "ELITE":
                     p += 1000.0
-                wr = float(r.resolved_market_win_rate or 0)
+                wr = float(r.copyability_score or 0)  # REFONTE 2026-05-21
                 if wr >= 0.99:
                     p += 500.0
                 elif wr >= 0.95:
@@ -539,6 +541,16 @@ class WalletPollingEngine:
         from app.models.trade import NoTradeDecision, TradeAuditRecord
         with Session(engine) as session:
             try:
+                # REFONTE 2026-05-21 — gate band-aware. La cohorte refonte est
+                # validée par bande de durée (cf _band_aware_reject). Placé
+                # avant le resolver : un trade hors-bande est rejeté sans même
+                # un fetch de métadonnées marché. Flag BAND_AWARE_GATE_ENABLED.
+                if os.environ.get("BAND_AWARE_GATE_ENABLED", "1").strip().lower() in (
+                    "1", "true", "yes", "on"
+                ):
+                    _band_reject = self._band_aware_reject(session, raw)
+                    if _band_reject is not None:
+                        return _band_reject
                 # v0.7.8 C1 — ensure market metadata is in the local DB
                 # BEFORE the audit decision runs. Without this, missing-
                 # market signals produce ``liquidity_score=0`` +
@@ -915,8 +927,79 @@ class WalletPollingEngine:
                 float(raw.get("price") or 0) * float(raw.get("size") or 0)
             ),
             "traded_at": datetime.fromtimestamp(int(raw.get("timestamp") or 0), UTC).isoformat(),
+            # REFONTE 2026-05-21 — slug propagé pour le gate band-aware.
+            "slug": raw.get("slug") or raw.get("eventSlug") or "",
             "data_source": "polling",
         }
+
+    @staticmethod
+    def _band_for_market_slug(slug: str | None) -> str:
+        """REFONTE 2026-05-21 — classe un marché crypto up/down par durée.
+        Retourne '5M', '15M', 'OTHER' (autre durée / non-crypto) ou ''
+        (slug absent / non parseable). Sert au gate band-aware."""
+        if not slug:
+            return ""
+        import re as _re
+        m = _re.search(r"updown-(\d+)(m|h)", str(slug).lower())
+        if not m:
+            return "OTHER"
+        minutes = int(m.group(1)) * (60 if m.group(2) == "h" else 1)
+        if minutes == 5:
+            return "5M"
+        if minutes == 15:
+            return "15M"
+        return "OTHER"
+
+    def _band_aware_reject(self, session, raw: dict[str, Any]) -> dict[str, Any] | None:
+        """REFONTE 2026-05-21 — rejette une copie si le marché n'est pas sur
+        une bande de durée validée pour ce wallet. La cohorte refonte est
+        validée par bande (best_category : CRYPTO_5M / CRYPTO_15M /
+        CRYPTO_5M_15M) ; copier hors-bande = edge non prouvée → perte
+        probable (règle opérateur 2026-05-21).
+
+        Retourne le dict de rejet (et écrit un NoTradeDecision) ou None si la
+        copie peut continuer. Fail-open : slug absent/illisible, ou wallet
+        hors cohorte refonte (best_category autre) → laisse passer l'audit."""
+        from uuid import uuid4 as _uuid4
+        from app.models.trade import NoTradeDecision
+        from app.models.wallet import MarketFirstWalletRecord
+
+        addr = raw.get("address") or raw.get("wallet")
+        slug = raw.get("slug") or ""
+        band = self._band_for_market_slug(slug)
+        if not band:
+            return None  # slug absent/illisible — fail-open
+        rec = session.get(MarketFirstWalletRecord, addr) if addr else None
+        cat = (rec.best_category if rec else None) or ""
+        allowed = {
+            "CRYPTO_5M": {"5M"},
+            "CRYPTO_15M": {"15M"},
+            "CRYPTO_5M_15M": {"5M", "15M"},
+        }.get(cat)
+        if allowed is None:
+            return None  # pas un wallet cohorte refonte — fail-open
+        if band in allowed:
+            return None  # bande validée — copie autorisée
+        # bande non validée pour ce wallet → rejet
+        market_id = raw.get("market_id") or raw.get("conditionId")
+        try:
+            session.add(NoTradeDecision(
+                id=str(_uuid4()),
+                market_id=market_id,
+                wallet_address=addr,
+                reason_code="BAND_MISMATCH",
+                details=json.dumps({
+                    "wallet_band": cat,
+                    "market_band": band,
+                    "slug": slug,
+                }),
+            ))
+            session.commit()
+        except Exception as exc:
+            logger.warning("band gate NoTradeDecision write failed: %s", exc)
+            session.rollback()
+        self._band_rejects_session = getattr(self, "_band_rejects_session", 0) + 1
+        return {"executed": False, "rejected": True, "reason": "BAND_MISMATCH"}
 
     # ---------------- main loop ----------------
 
@@ -1369,10 +1452,28 @@ class WalletPollingEngine:
                 asyncio.create_task(bg_db_counter(), name="bg_db_counter"),
                 asyncio.create_task(bg_heartbeat(), name="bg_heartbeat"),
             ]
+            # REFONTE 2026-05-21 — WS-only. Le polling per-wallet est la source
+            # du copy_delay (~60s) : un trade attend le cycle de lane avant
+            # d'être vu, et son ré-audit tardif écrase l'audit rapide du WS.
+            # Le service WS détecte chaque trade en <1s. Avec
+            # WALLET_POLLING_ENABLED=0 on ne démarre PAS les workers de scan ;
+            # les boucles critiques (close-loop, db-counter, heartbeat)
+            # continuent. La cohorte (_cohort) est déjà chargée par run_loop.
+            _wallet_polling_on = os.environ.get(
+                "WALLET_POLLING_ENABLED", "1").strip().lower() in (
+                "1", "true", "yes", "on")
             # Start audit pool FIRST (so consumers ready before pollers enqueue)
-            if self._audit_pool is not None:
+            if self._audit_pool is not None and _wallet_polling_on:
                 await self._audit_pool.start()
-            await pool.start()
+            if _wallet_polling_on:
+                await pool.start()
+            else:
+                logger.warning(
+                    "wallet polling DÉSACTIVÉ (WALLET_POLLING_ENABLED=0) — "
+                    "détection via service WS activity ; close-loop / "
+                    "db-counter / heartbeat actifs ; cohorte=%d",
+                    len(self._cohort),
+                )
 
             try:
                 # Wait until stop_event is signalled.
@@ -1381,10 +1482,11 @@ class WalletPollingEngine:
             finally:
                 logger.info("P0-B workers: stopping...")
                 stop_bg.set()
-                await pool.stop()
-                # Stop audit pool AFTER pollers (so no new events enqueued)
-                if self._audit_pool is not None:
-                    await self._audit_pool.stop()
+                if _wallet_polling_on:
+                    await pool.stop()
+                    # Stop audit pool AFTER pollers (so no new events enqueued)
+                    if self._audit_pool is not None:
+                        await self._audit_pool.stop()
                 for t in bg_tasks:
                     if not t.done():
                         t.cancel()

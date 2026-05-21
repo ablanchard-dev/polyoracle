@@ -146,6 +146,28 @@ def stream_pull_status() -> dict[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+@router.get("/ws-activity")
+def ws_activity_status() -> dict[str, Any]:
+    """WS activity service runtime counters (REFONTE 2026-05-21). Returns
+    {instance: None, ...} if service not initialized (e.g.
+    POLYMARKET_WS_ACTIVITY_ENABLED=false at boot)."""
+    try:
+        from app.services.polymarket_ws_activity import (
+            get_ws_activity_service,
+            is_ws_activity_enabled,
+        )
+        svc = get_ws_activity_service()
+        if svc is None:
+            return {
+                "enabled_flag": is_ws_activity_enabled(),
+                "instance": None,
+                "note": "service not initialized (singleton is None)",
+            }
+        return {"enabled_flag": is_ws_activity_enabled(), **svc.get_stats()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @router.get("/utilization")
 def utilization_status(
     window_hours: float = 24.0,

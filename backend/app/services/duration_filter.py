@@ -148,24 +148,15 @@ def filter_duration_for_capital(
     # SMALL (< $500) — SHORT-ONLY: 1-5 prio, 5-10 edge, >10 reject
     # ====================================================================
     if cap < _CAPITAL_TIER_SMALL_MAX:
-        if duration_bucket == "ULTRA_SHORT":  # 0-5 min — auto-allow
+        # REFONTE 2026-05-21 — la cohorte refonte trade les bandes crypto
+        # 5 ET 15 min (cf band gate amont, _band_aware_reject). À SMALL on
+        # autorise donc ULTRA_SHORT (~5 min) ET VERY_SHORT (~15 min) :
+        # l'ancienne règle ">10 min reject à 100€" est levée pour le 15 min
+        # — bande validée EV (2 523 wallets CRYPTO_15M dans la cohorte).
+        # SHORT+ (30-120 min+) reste rejeté — de toute façon jamais atteint,
+        # le band gate amont ne laisse passer que 5/15 min.
+        if duration_bucket in ("ULTRA_SHORT", "VERY_SHORT"):
             return True, None
-        if duration_bucket == "VERY_SHORT":   # 5-30 min — split @ 10 min
-            if minutes is None:
-                # Conservative default: reject (no minutes → can't be sure
-                # it's ≤10 min). Production callers MUST pass minutes.
-                return False, "CAPITAL_LOCK_TOO_LONG"
-            if minutes <= 10.0:
-                # 5-10 min — edge-conditional
-                if _exceptional_override(
-                    ev_lower_bound, capital_turnover_score,
-                    min_ev=0.05, min_score=15.0,
-                ):
-                    return True, None
-                return False, "CAPITAL_LOCK_TOO_LONG"
-            # 10-30 min — reject at SMALL (locks growth-phase capital)
-            return False, "CAPITAL_LOCK_TOO_LONG"
-        # SHORT (30-120) and beyond — reject at SMALL no exception
         return False, "CAPITAL_LOCK_TOO_LONG"
 
     # ====================================================================

@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     paper_max_daily_loss: float = 0.03
     paper_max_weekly_loss: float = 0.08
     min_confidence_score: float = 60.0
-    min_copyable_edge: float = 60.0
+    min_copyable_edge: float = 0.0  # REFONTE 2026-05-21 — neutralisé. L'edge est gaté UNE seule fois, dans trade_audit_engine._decide (copyable_edge >= COPYABLE_EDGE_PAPER_FLOOR). Le gate risk_engine (échelle ×200, seuil 60 = edge 0.30) contredisait _decide (edge 0.05) → trades tués à tort. Un seul gate d'edge.
     max_spread_pct: float = 0.03
     min_liquidity_score: float = 50.0
     auto_paper_trade_enabled: bool = True

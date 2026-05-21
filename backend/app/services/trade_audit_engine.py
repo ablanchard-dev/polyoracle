@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -490,46 +491,22 @@ class TradeAuditEngine:
             return "IGNORE"
         if edge.classification in ("NO_EDGE", "NEGATIVE_EDGE"):
             return "WATCH" if wallet_tier in ("ELITE", "STRONG") else "IGNORE"
-        if quality in ("UNTRADABLE", "BAD"):
-            # 2026-05-14 — drill NOT_PAPER 88% finding (Round 9 review):
-            # ELITE strong-edge trades on crypto 5min markets get orderbook
-            # BAD/UNTRADABLE due to CLOB 404, blocking them here before the
-            # capital_allocator/risk_engine `_elite_paper_bypass` can fire.
-            # Lift the orderbook filter ONLY when paper-mode AND every strict
-            # quality threshold is already met (no seuil baissé : tier strict,
-            # STRONG_EDGE, tq>=70, liquidity_score>0). In live mode (or strict
-            # paper) we still return WATCH. The caller appends warning
-            # 'live_shadow_paper_bypass_orderbook' for M1 v5 paper-vs-live
-            # gap measurement.
-            # 2026-05-14 — doctrine opérateur review Round 9 :
-            # Le bypass orderbook paper-mode est INVIOLABLE en prod/VPS.
-            # Triple gate alignée avec capital_allocator._elite_paper_bypass
-            # et risk_engine pour cohérence audit-aval :
-            #   1. paper_trading_enabled (paper mode)
-            #   2. not live_enabled (pas live)
-            #   3. not paper_live_strict (= mode permissif)
-            #   4. allow_non_strict_paper_research (= opt-in research offline
-            #      explicite — config refuse cette combo en prod/VPS)
-            paper_mode = bool(
-                self.settings.paper_trading_enabled
-                and not self.settings.live_enabled
-                and not self.settings.paper_live_strict
-                and self.settings.allow_non_strict_paper_research
-            )
-            if (
-                paper_mode
-                and wallet_tier in ("ELITE", "STRONG")
-                and edge.classification == "STRONG_EDGE"
-                and trade_quality_score >= 70
-                and market_liquidity_score > 0
-            ):
-                return "PAPER_TRADE"
-            return "WATCH"
-        if spread_pct is not None and spread_pct > self.settings.max_spread_pct:
-            return "WATCH"
-        if market_liquidity_score < self.settings.min_liquidity_score:
-            return "WATCH"
-        if wallet_tier in ("ELITE", "STRONG") and trade_quality_score >= 70 and edge.classification == "STRONG_EDGE":
+        # REFONTE 2026-05-21 — copyable_edge = GATE MAÎTRE du PAPER_TRADE.
+        # Backtest sur résolutions réelles (frais Polymarket exacts) :
+        # l'ancien set PAPER_TRADE (favoris chers : tq>=70 & STRONG_EDGE)
+        # était ~breakeven (-0.6% ROI net) ; router le PAPER_TRADE sur
+        # copyable_edge >= seuil donne +3.3% ROI net (et +8% avec un cap de
+        # prix — le cap sera trié en paper, pas figé ici).
+        # copyable_edge intègre DÉJÀ spread / slippage / délai → les gates
+        # orderbook / spread / liquidity ne peuvent plus annuler un trade à
+        # edge prouvé (ils dataient d'avant qu'on ait validé copyable_edge).
+        # Seuil tunable à chaud via COPYABLE_EDGE_PAPER_FLOOR (défaut 0.05).
+        edge_value = float(getattr(edge, "copyable_edge", 0.0) or 0.0)
+        try:
+            paper_floor = float(os.environ.get("COPYABLE_EDGE_PAPER_FLOOR", "0.05"))
+        except (TypeError, ValueError):
+            paper_floor = 0.05
+        if wallet_tier in ("ELITE", "STRONG") and edge_value >= paper_floor:
             return "PAPER_TRADE"
         if wallet_score >= 70 and trade_quality_score >= 60 and edge.classification != "NO_EDGE":
             return "SIGNAL"
