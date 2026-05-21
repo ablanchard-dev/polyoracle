@@ -81,6 +81,12 @@ COHORT_REFRESH_S = 60.0
 # Même règle que stream_pull : au-delà, le pipeline rejette en
 # STALE_SIGNAL_BACKFILL. En push WS les trades sont frais — garde défensive.
 DEFAULT_MAX_TRADE_AGE_S = _env_int("POLYMARKET_WS_MAX_TRADE_AGE_S", 90)
+# Watchdog flux : le WS RTDS peut rester TCP-alive (ping/pong honorés) mais
+# cesser de pousser des events activity — aucune exception n'est levée, le
+# service reste 'connected' sans plus rien recevoir. Si aucun event pendant
+# STALE_EVENT_THRESHOLD_S → reconnexion forcée (re-souscription propre).
+STALE_EVENT_THRESHOLD_S = float(_env_int("POLYMARKET_WS_STALE_THRESHOLD_S", 90))
+STALE_CHECK_INTERVAL_S = 30.0
 
 
 def is_ws_activity_enabled() -> bool:
@@ -111,6 +117,7 @@ class WSActivityService:
         # Compteurs (lus par /observability ou endpoint status).
         self.connects = 0
         self.reconnects = 0
+        self.stale_reconnects = 0
         self.events_received = 0
         self.trade_events = 0
         self.orders_matched_events = 0
@@ -201,18 +208,22 @@ class WSActivityService:
             self.connected_since = time.time()
             logger.warning("ws_activity: connecté à %s", WS_URL)
             await ws.send(json.dumps(SUBSCRIBE_MSG))
+            # Baseline watchdog : évite un faux-positif juste après connexion.
+            self.last_event_at = time.time()
             ping_task = asyncio.create_task(self._ping_loop(ws))
+            watchdog_task = asyncio.create_task(self._staleness_watchdog(ws))
             try:
                 async for raw in ws:
                     if self._stop_event.is_set():
                         break
                     self._handle_message(raw)
             finally:
-                ping_task.cancel()
-                try:
-                    await ping_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                for _t in (ping_task, watchdog_task):
+                    _t.cancel()
+                    try:
+                        await _t
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 self.connected_since = None
                 self._ws = None
 
@@ -221,6 +232,34 @@ class WSActivityService:
             while True:
                 await asyncio.sleep(PING_INTERVAL_S)
                 await ws.send("ping")
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _staleness_watchdog(self, ws: Any) -> None:
+        """Force la reconnexion si le flux activity est silencieux trop longtemps.
+
+        Le WS RTDS peut rester TCP-alive (ping/pong honorés) tout en cessant de
+        pousser des events — `websockets` ne lève alors aucune exception et le
+        service reste 'connected' sans rien recevoir (mort silencieuse observée
+        2026-05-21 : flux figé après ~12min, 0 reconnexion). On surveille
+        last_event_at et on close le socket → _run_loop reconnecte + re-souscrit."""
+        try:
+            while True:
+                await asyncio.sleep(STALE_CHECK_INTERVAL_S)
+                if self.last_event_at is None:
+                    continue
+                silence = time.time() - self.last_event_at
+                if silence > STALE_EVENT_THRESHOLD_S:
+                    self.stale_reconnects += 1
+                    self.last_error = (
+                        f"STALE_STREAM: 0 event depuis {silence:.0f}s "
+                        f"-> reconnexion forcee")
+                    logger.warning("ws_activity: %s", self.last_error)
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    return
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -380,6 +419,7 @@ class WSActivityService:
             "connected": self.connected_since is not None,
             "connects": self.connects,
             "reconnects": self.reconnects,
+            "stale_reconnects": self.stale_reconnects,
             "uptime_s": (time.time() - self._started_at) if self._started_at else 0,
             "events_received": self.events_received,
             "trade_events": self.trade_events,
