@@ -46,10 +46,12 @@ try:  # WS orderbook — alimenté en continu par les trades détectés ci-desso
     from app.services.polymarket_ws_orderbook import (
         get_orderbook_service as _get_ob_service,
         is_ws_enabled as _ob_ws_enabled,
+        get_cached_orderbook as _get_cached_ob,
     )
 except Exception:  # pragma: no cover
     _get_ob_service = None
     _ob_ws_enabled = None
+    _get_cached_ob = None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -439,32 +441,51 @@ class WSActivityService:
     # ---- rejected ledger -------------------------------------------------
     def _init_reject_ledger(self) -> None:
         """Ouvre/crée le ledger SQLite des rejets — fichier SÉPARÉ de la DB
-        principale (aucune contention ni risque sur polyoracle.db)."""
+        principale (aucune contention ni risque sur polyoracle.db). v1.1 :
+        WAL, colonnes orderbook, clé unique anti-doublon, champs résolution."""
         try:
             import sqlite3
             db = sqlite3.connect(REJECT_LEDGER_PATH, timeout=10,
                                  check_same_thread=False)
+            db.execute("PRAGMA journal_mode=WAL")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS strict_reject ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, trade_ts INTEGER, "
                 "tid TEXT, wallet TEXT, market_id TEXT, token_id TEXT, slug TEXT, "
                 "outcome TEXT, side TEXT, source_price REAL, source_size REAL, "
                 "band TEXT, reason TEXT, reason_code TEXT, copyable_edge REAL, "
-                "detail TEXT)")
-            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_market "
-                       "ON strict_reject(market_id)")
-            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_reason "
-                       "ON strict_reject(reason)")
+                "our_vwap REAL, worst_price REAL, spread REAL, depth_ok INTEGER, "
+                "orderbook_status TEXT, proposed_size REAL, wallet_tier TEXT, "
+                "lane TEXT, would_have_won INTEGER, hyp_pnl_net REAL, detail TEXT)")
+            # migration in-place si la table existait en v1 (ADD COLUMN idempotent)
+            for col, typ in (("our_vwap", "REAL"), ("worst_price", "REAL"),
+                             ("spread", "REAL"), ("depth_ok", "INTEGER"),
+                             ("orderbook_status", "TEXT"), ("proposed_size", "REAL"),
+                             ("wallet_tier", "TEXT"), ("lane", "TEXT"),
+                             ("would_have_won", "INTEGER"), ("hyp_pnl_net", "REAL")):
+                try:
+                    db.execute("ALTER TABLE strict_reject ADD COLUMN %s %s" % (col, typ))
+                except Exception:
+                    pass
+            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_market ON strict_reject(market_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_reason ON strict_reject(reason)")
+            try:
+                db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_rej_tid "
+                           "ON strict_reject(tid, reason)")
+            except Exception:  # doublons v1 préexistants — index non-unique toléré
+                pass
             db.commit()
             self._reject_db = db
-            logger.warning("ws_activity: rejected ledger ouvert -> %s",
+            logger.warning("ws_activity: rejected ledger v1.1 ouvert -> %s",
                             REJECT_LEDGER_PATH)
         except Exception as exc:  # pragma: no cover
             self._reject_db = None
             logger.warning("ws_activity: rejected ledger init échouée : %s", exc)
 
     def _log_reject(self, tid: Any, wallet: str, trade: dict, result: Any) -> None:
-        """Logge un rejet de gate strict. Best-effort — ne casse jamais le dispatch."""
+        """Logge un rejet de gate strict (ledger v1.1) : enrichi avec l'orderbook
+        WS (VWAP/worst/spread/depth potentiels). Best-effort — ne casse jamais
+        le dispatch. INSERT OR IGNORE = anti-doublon via clé unique (tid,reason)."""
         db = self._reject_db
         if db is None:
             return
@@ -475,23 +496,46 @@ class WSActivityService:
                     else "15m" if ("updown-15m" in sl or "-15m-" in sl or "15min" in sl)
                     else "60m" if ("60m" in sl or "hourly" in sl) else "?")
             res = result or {}
+            side = (trade.get("side") or "BUY").upper()
+            # enrichissement orderbook WS : notre VWAP/worst/spread/depth potentiels.
+            our_vwap = worst_price = spread = None
+            depth_ok = None
+            ob_status = "NO_BOOK"
+            try:
+                if _get_cached_ob is not None:
+                    ob = _get_cached_ob(str(trade.get("asset") or ""))
+                    if ob is not None:
+                        ob_status = "WS_FRESH" if ob.is_fresh(max_age_s=4.0) else "WS_STALE"
+                        if side == "BUY":
+                            our_vwap = ob.compute_vwap_buy(2.0)
+                            worst_price = ob.compute_worst_price_buy(2.0)
+                        else:
+                            our_vwap = ob.compute_vwap_sell(2.0)
+                            worst_price = ob.compute_worst_price_sell(2.0)
+                        spread = ob.spread()
+                        depth_ok = 1 if our_vwap is not None else 0
+            except Exception:
+                pass
             extra = {k: res[k] for k in (
-                "profile", "wallet_tier", "lane", "spread", "liquidity_score",
-                "clob_status", "price_source", "proposed_size_usd") if k in res}
+                "profile", "liquidity_score", "clob_status", "price_source") if k in res}
             import datetime as _dt
             db.execute(
-                "INSERT INTO strict_reject (ts,trade_ts,tid,wallet,market_id,"
-                "token_id,slug,outcome,side,source_price,source_size,band,reason,"
-                "reason_code,copyable_edge,detail) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO strict_reject (ts,trade_ts,tid,wallet,"
+                "market_id,token_id,slug,outcome,side,source_price,source_size,"
+                "band,reason,reason_code,copyable_edge,our_vwap,worst_price,spread,"
+                "depth_ok,orderbook_status,proposed_size,wallet_tier,lane,detail) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (_dt.datetime.now(_dt.timezone.utc).isoformat(),
                  int(trade.get("timestamp") or 0), str(tid), wallet,
                  trade.get("conditionId"), trade.get("asset"), slug,
-                 trade.get("outcome"), trade.get("side"),
+                 trade.get("outcome"), side,
                  _safe_float(trade.get("price")), _safe_float(trade.get("size")),
                  band, str(res.get("reason") or "")[:80],
                  str(res.get("reason_code") or "")[:48],
                  _safe_float(res.get("copyable_edge")),
+                 _safe_float(our_vwap), _safe_float(worst_price), _safe_float(spread),
+                 depth_ok, ob_status, _safe_float(res.get("proposed_size_usd")),
+                 res.get("wallet_tier"), res.get("lane"),
                  json.dumps(extra) if extra else None))
             db.commit()
             self.reject_logged += 1
