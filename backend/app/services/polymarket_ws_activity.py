@@ -66,6 +66,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
 WS_URL = "wss://ws-live-data.polymarket.com"
 WS_ENABLED_FLAG = "POLYMARKET_WS_ACTIVITY_ENABLED"
 SUBSCRIBE_MSG = {
@@ -87,6 +94,13 @@ DEFAULT_MAX_TRADE_AGE_S = _env_int("POLYMARKET_WS_MAX_TRADE_AGE_S", 90)
 # STALE_EVENT_THRESHOLD_S → reconnexion forcée (re-souscription propre).
 STALE_EVENT_THRESHOLD_S = float(_env_int("POLYMARKET_WS_STALE_THRESHOLD_S", 90))
 STALE_CHECK_INTERVAL_S = 30.0
+
+# Rejected ledger : fichier SQLite SÉPARÉ (zéro contention avec polyoracle.db).
+# Logge chaque rejet de gate strict pour mesurer a posteriori l'EV des trades
+# qu'on ne prend pas (BAND_MISMATCH, LOW_LIQ, CLOB_NOT_FILLABLE, SELL...).
+REJECT_LEDGER_PATH = os.environ.get(
+    "STRICT_REJECT_LEDGER_PATH",
+    "/opt/app/polyoracle/data/strict_reject_ledger.db")
 
 
 def is_ws_activity_enabled() -> bool:
@@ -134,6 +148,8 @@ class WSActivityService:
         self.last_event_at: Optional[float] = None
         self.last_error: Optional[str] = None
         self.reasons: dict[str, int] = {}
+        self.reject_logged = 0
+        self._reject_db: Any = None
 
     # ---- lifecycle -------------------------------------------------------
     def is_running(self) -> bool:
@@ -148,6 +164,7 @@ class WSActivityService:
             return
         self._stop_event.clear()
         self._started_at = time.time()
+        self._init_reject_ledger()
         self._worker_task = asyncio.create_task(
             self._dispatch_worker(), name="ws_activity_worker")
         self._conn_task = asyncio.create_task(
@@ -170,6 +187,12 @@ class WSActivityService:
                     pass
         self._conn_task = None
         self._worker_task = None
+        if self._reject_db is not None:
+            try:
+                self._reject_db.close()
+            except Exception:
+                pass
+            self._reject_db = None
         logger.warning("ws_activity: arrêté")
 
     # ---- connexion -------------------------------------------------------
@@ -404,6 +427,7 @@ class WSActivityService:
         else:
             reason = str((result or {}).get("reason") or "UNKNOWN")[:64]
             self.reasons[reason] = self.reasons.get(reason, 0) + 1
+            self._log_reject(tid, wallet, trade, result)
         logger.warning(
             "ws_activity: dispatch wallet=%s slug=%s side=%s size=%s price=%s "
             "-> executed=%s reason=%s",
@@ -411,6 +435,68 @@ class WSActivityService:
             trade.get("size"), trade.get("price"),
             executed, (result or {}).get("reason"),
         )
+
+    # ---- rejected ledger -------------------------------------------------
+    def _init_reject_ledger(self) -> None:
+        """Ouvre/crée le ledger SQLite des rejets — fichier SÉPARÉ de la DB
+        principale (aucune contention ni risque sur polyoracle.db)."""
+        try:
+            import sqlite3
+            db = sqlite3.connect(REJECT_LEDGER_PATH, timeout=10,
+                                 check_same_thread=False)
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS strict_reject ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, trade_ts INTEGER, "
+                "tid TEXT, wallet TEXT, market_id TEXT, token_id TEXT, slug TEXT, "
+                "outcome TEXT, side TEXT, source_price REAL, source_size REAL, "
+                "band TEXT, reason TEXT, reason_code TEXT, copyable_edge REAL, "
+                "detail TEXT)")
+            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_market "
+                       "ON strict_reject(market_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS ix_rej_reason "
+                       "ON strict_reject(reason)")
+            db.commit()
+            self._reject_db = db
+            logger.warning("ws_activity: rejected ledger ouvert -> %s",
+                            REJECT_LEDGER_PATH)
+        except Exception as exc:  # pragma: no cover
+            self._reject_db = None
+            logger.warning("ws_activity: rejected ledger init échouée : %s", exc)
+
+    def _log_reject(self, tid: Any, wallet: str, trade: dict, result: Any) -> None:
+        """Logge un rejet de gate strict. Best-effort — ne casse jamais le dispatch."""
+        db = self._reject_db
+        if db is None:
+            return
+        try:
+            slug = trade.get("slug") or ""
+            sl = slug.lower()
+            band = ("5m" if ("updown-5m" in sl or "-5m-" in sl or "5min" in sl)
+                    else "15m" if ("updown-15m" in sl or "-15m-" in sl or "15min" in sl)
+                    else "60m" if ("60m" in sl or "hourly" in sl) else "?")
+            res = result or {}
+            extra = {k: res[k] for k in (
+                "profile", "wallet_tier", "lane", "spread", "liquidity_score",
+                "clob_status", "price_source", "proposed_size_usd") if k in res}
+            import datetime as _dt
+            db.execute(
+                "INSERT INTO strict_reject (ts,trade_ts,tid,wallet,market_id,"
+                "token_id,slug,outcome,side,source_price,source_size,band,reason,"
+                "reason_code,copyable_edge,detail) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (_dt.datetime.now(_dt.timezone.utc).isoformat(),
+                 int(trade.get("timestamp") or 0), str(tid), wallet,
+                 trade.get("conditionId"), trade.get("asset"), slug,
+                 trade.get("outcome"), trade.get("side"),
+                 _safe_float(trade.get("price")), _safe_float(trade.get("size")),
+                 band, str(res.get("reason") or "")[:80],
+                 str(res.get("reason_code") or "")[:48],
+                 _safe_float(res.get("copyable_edge")),
+                 json.dumps(extra) if extra else None))
+            db.commit()
+            self.reject_logged += 1
+        except Exception:  # pragma: no cover
+            pass
 
     # ---- observabilité ---------------------------------------------------
     def get_stats(self) -> dict[str, Any]:
@@ -437,6 +523,7 @@ class WSActivityService:
             "cohort_size": len(self._cohort_set or ()),
             "last_event_at": self.last_event_at,
             "last_error": self.last_error,
+            "reject_logged": self.reject_logged,
             "reasons": dict(self.reasons),
         }
 
