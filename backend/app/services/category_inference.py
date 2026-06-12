@@ -28,6 +28,20 @@ CATEGORY_KEYWORDS: list[tuple[str, list[str]]] = [
         "ether", "blockchain", "nft", "bnb",
         "xrp", "cardano", "ada", "avalanche", "avax",
         "polkadot", "polygon", "matic", "litecoin", "ltc",
+        # R1 V2 audit fix (2026-05-27) — 595 condition_ids restaient
+        # "unknown" car les slugs Polymarket dynamiques utilisent
+        # `<coin>-updown-{5m,15m,4h}-<epoch>` (la version concaténée
+        # n'était pas matchée par 'sol-up' alone).
+        "btc-updown", "eth-updown", "sol-updown", "xrp-updown",
+        "bnb-updown", "doge-updown", "hype-updown", "ada-updown",
+        "avax-updown", "sui-updown", "matic-updown", "ltc-updown",
+        "shib-updown", "pepe-updown", "wif-updown", "bonk-updown",
+        # Form courte question text ("Up or Down")
+        "up or down",
+        # Hyperliquid (token HYPE)
+        "hyperliquid", "hype",
+        # Long-form question text patterns
+        "bitcoin up", "ethereum up", "solana up",
     ]),
     ("Sports", [
         "nfl", "nba", "mlb", "soccer", "football", "basketball",
