@@ -80,3 +80,7 @@ backend/_backups_v0_7_8_smoke_pre/
 
 # Agent runtime state (not relevant for portability)
 .claude/
+
+# never track root config/secrets or data dumps (portfolio hygiene)
+/.env
+data/
