@@ -1,8 +1,21 @@
-# POLYORACLE
+# Polyoracle
 
-POLYORACLE is a local-first **smart-money audit bot** for Polymarket. It scans massively, audits the top 50–100 wallets, audits a large number of public trades, scores each opportunity through a strict copyable-edge filter, and only paper-trades the rare A/A+ signals.
+> Local-first **smart-money copy-trading research bot** for Polymarket — full-stack
+> (FastAPI + Next.js). It scans the market, audits the best wallets, scores each
+> opportunity through a strict copyable-edge filter, and paper-trades only the rare
+> high-conviction signals.
 
-Current version: `v0.5.4-validated-paper-universe` (new strict ELITE rule with `OUTLIER_FLAGGED` enum, 3-year / 3000-market discovery + OOS validation, and a merged `ValidatedPaperUniverse` of **216 wallets** — 52 ELITE + 164 STRONG — that excludes outliers, biased samples, failed validations and candidates. **Paper 7d run intentionally NOT launched** — awaiting operator confirmation on the universe size).
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-frontend-000000?logo=nextdotjs&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-800%2B-success)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+> **Status : research / paper.** Live trading is locked by default — an edge must first
+> be proven to survive copy delay, spread, slippage, liquidity and risk controls. The
+> value here is the **engineering and the honest methodology**, not a profit claim.
+
+**Stack** — FastAPI · SQLModel · SQLite · Next.js / React · pytest (800+ tests).
 
 ## Core Philosophy
 
@@ -513,7 +526,7 @@ cd polyoracle/backend
 pytest
 ```
 
-77 tests pass: the original 15 (v0.3), plus 20 (v0.4), plus 5 stability smoke (v0.4.1), plus 9 discovery + win-rate (v0.4.2), plus 8 market-first (v0.5), plus 6 candidate validation (v0.5.1), plus 1 strict ELITE rule + 13 risk-mode tests (v0.5.2). The v0.5.2 tests lock in: SAFE refuses CANDIDATE_ELITE; AGGRESSIVE accepts CANDIDATE_ELITE iff sample ≥ 20; FULL_PAPER has no daily cap but enforces every exposure cap; live execution is blocked on every profile; the kill switch overrides every mode; a 100% win rate on sample 99 / MEDIUM confidence cannot become ELITE.
+An extensive automated test suite (**800+ tests**) covers the conservative win-rate engine, wallet classification, the capital/risk allocator, the paper-trading engine, the discovery + out-of-sample validation pipeline, and the safety gates — kill switch, exposure caps and the permanent live-execution lock (e.g. a 100% win rate on a thin sample / MEDIUM confidence can never become ELITE; SAFE ≤ AGGRESSIVE ≤ FULL_PAPER is an enforced invariant).
 
 Frontend build:
 
