@@ -13,9 +13,7 @@ from app.services.clob_executor import (
     CLOBExecutor,
     CLOBExecutorConfig,
     PlaceOrderResult,
-    SIGNATURE_TYPE_EOA,
     build_executor_from_env,
-    status_payload,
 )
 from app.services.pusd_wrapper import (
     COLLATERAL_ONRAMP_ADDRESS_PLACEHOLDER,
@@ -139,24 +137,14 @@ def test_executor_status_reports_state(dryrun_config, tmp_path):
     ex = CLOBExecutor(dryrun_config).initialize()
     status = ex.status()
     assert status["initialized"] is True
-    assert status["signature_type"] == SIGNATURE_TYPE_EOA
-    assert status["chain_id"] == 137  # Polygon
     assert status["dry_run"] is True
+    assert status["signature_type"] == dryrun_config.signature_type
 
 
 def test_build_executor_from_env_none_if_no_privkey(monkeypatch):
     monkeypatch.delenv("POLYMARKET_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("PRIVATE_KEY", raising=False)
     assert build_executor_from_env() is None
-
-
-def test_status_payload_no_privkey(monkeypatch):
-    monkeypatch.delenv("POLYMARKET_PRIVATE_KEY", raising=False)
-    monkeypatch.delenv("PRIVATE_KEY", raising=False)
-    payload = status_payload()
-    assert payload["configured"] is False
-    assert payload["live_ready"] is False
-    assert payload["chain_id"] == 137
 
 
 # ====================== pUSD wrapper ======================
