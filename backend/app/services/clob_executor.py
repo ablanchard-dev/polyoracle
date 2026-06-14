@@ -82,7 +82,13 @@ class CLOBExecutorConfig:
     chain_id: int = POLYGON_CHAIN_ID
     private_key: str = ""
     funder_address: str = ""
-    signature_type: int = 3  # POLY_1271 by default for Magic Wallet
+    # AUDIT 2026-06: signature_type=3 / "POLY_1271" is FICTIONAL. The real
+    # py-clob-client only knows 0=EOA, 1=Magic, 2=proxy (a Magic wallet is 1).
+    # This — like the `py_clob_client_v2` imports further down — belongs to the
+    # never-delivered "live v2" path, which stays behind dry_run + flags.
+    # Polymarket integration is paper-only; do NOT flip to live without first
+    # rewriting this path against a real SDK (py-clob-client / polymarket-client).
+    signature_type: int = 3  # phantom default; kept as-is to avoid behaviour change
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     api_passphrase: Optional[str] = None

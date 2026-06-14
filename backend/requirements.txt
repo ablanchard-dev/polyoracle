@@ -10,3 +10,10 @@ pytest==8.2.2
 pytest-asyncio>=1.0,<2.0
 eth-account>=0.11,<0.14
 web3>=6,<8
+# Official Polymarket CLOB SDK — the REAL client behind the paper / preflight /
+# wallet-reader paths. Was installed by hand on the dev box but never declared,
+# which is why CI (clean env) broke. Pulls web3/eth-account transitively.
+# NOTE: the live "v2" code path imports a `py_clob_client_v2` SDK that was never
+# delivered (phantom module — see clob_executor.py). It stays behind dry_run +
+# LIVE_EXECUTOR_V2_ENABLED flags; Polymarket integration is paper-only.
+py-clob-client==0.34.6

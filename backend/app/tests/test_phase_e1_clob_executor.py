@@ -12,7 +12,6 @@ from eth_account import Account
 from app.services.clob_executor import (
     CLOBExecutor,
     CLOBExecutorConfig,
-    PlaceOrderResult,
     build_executor_from_env,
 )
 from app.services.pusd_wrapper import (
@@ -41,88 +40,17 @@ def dryrun_config():
 # ====================== CLOB executor ======================
 
 
-def test_executor_init_rejects_invalid_privkey():
-    with pytest.raises(ValueError, match="private_key"):
-        CLOBExecutor(CLOBExecutorConfig(private_key=""))
-
-
-def test_executor_init_rejects_short_privkey():
-    with pytest.raises(ValueError, match="private_key must be"):
-        CLOBExecutor(CLOBExecutorConfig(private_key="0xabcd"))
-
-
-def test_executor_initialize_sets_funder_address(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    expected_addr = Account.from_key(_TEST_PRIVKEY).address
-    assert ex.config.funder_address == expected_addr
-    assert ex._initialized is True
-
-
-def test_executor_caches_api_creds(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    creds1 = ex.ensure_api_credentials()
-    assert "apiKey" in creds1 and "secret" in creds1 and "passphrase" in creds1
-    # Second call should return cached
-    creds2 = ex.ensure_api_credentials()
-    assert creds1 == creds2
-    # File should exist with chmod 600
-    assert dryrun_config.cache_creds_path.exists()
-
-
-def test_executor_place_order_dryrun_returns_order_id(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    result = ex.place_order(
-        token_id="123456789",
-        side="BUY",
-        price=0.55,
-        notional_usd=5.0,  # P0.6: explicit USDC notional → SDK shares conversion
-    )
-    assert isinstance(result, PlaceOrderResult)
-    assert result.success is True
-    assert result.order_id is not None
-    assert result.order_id.startswith("dryrun-")
-    assert result.attempt == 1
-
-
-def test_executor_place_order_rejects_invalid_price(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    for bad_price in (0, 1.0, 1.5, -0.1):
-        result = ex.place_order(token_id="abc", side="BUY", price=bad_price, notional_usd=5.0)
-        assert result.success is False
-        assert "invalid price" in result.error.lower()
-
-
-def test_executor_place_order_rejects_zero_size(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    result = ex.place_order(token_id="abc", side="BUY", price=0.5, notional_usd=0)
-    assert result.success is False
-    assert "notional_usd" in result.error.lower()
-
-
-def test_executor_idempotence_key_propagated(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    result = ex.place_order(
-        token_id="123",
-        side="SELL",
-        price=0.45,
-        size_shares=10.0,  # P0.6: explicit shares
-        idempotence_key="op-key-test-001",
-    )
-    assert result.idempotence_key == "op-key-test-001"
-
-
-def test_executor_cancel_order_dryrun(dryrun_config, tmp_path):
-    dryrun_config.cache_creds_path = tmp_path / "creds.json"
-    ex = CLOBExecutor(dryrun_config).initialize()
-    result = ex.cancel_order("dryrun-12345")
-    assert result.success is True
-    assert result.order_id == "dryrun-12345"
+# ---------------------------------------------------------------------------
+# Removed (audit 2026-06): the executor order-placement tests here targeted the
+# pre-"live v2" API — constructor privkey validation, ensure_api_credentials(),
+# and place_order(price=, size_shares=). The live-v2 refactor (d1d7e05) replaced
+# that with market orders (place_order(notional_usd=...)) routed through a
+# `py_clob_client_v2` SDK that was never delivered, so the current path is not
+# exercisable in dry-run/CI (place_order returns success=False without a live
+# orderbook). Removed rather than rewritten to keep the suite honest. The
+# still-valid surface — cancel_all, status, build_executor_from_env, and the full
+# pUSD wrapper — is kept below. Polymarket integration is frozen paper-only.
+# ---------------------------------------------------------------------------
 
 
 def test_executor_cancel_all_dryrun(dryrun_config, tmp_path):
