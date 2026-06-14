@@ -34,7 +34,7 @@ _TEST_PRIVKEY = "0x" + "11" * 32
 def dryrun_config():
     return CLOBExecutorConfig(
         private_key=_TEST_PRIVKEY, dry_run=True,
-        creds_cache_path=__import__("pathlib").Path("/tmp/_test_polymarket_creds.json"),
+        cache_creds_path=__import__("pathlib").Path("/tmp/_test_polymarket_creds.json"),
     )
 
 
@@ -52,7 +52,7 @@ def test_executor_init_rejects_short_privkey():
 
 
 def test_executor_initialize_sets_funder_address(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     expected_addr = Account.from_key(_TEST_PRIVKEY).address
     assert ex.config.funder_address == expected_addr
@@ -60,7 +60,7 @@ def test_executor_initialize_sets_funder_address(dryrun_config, tmp_path):
 
 
 def test_executor_caches_api_creds(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     creds1 = ex.ensure_api_credentials()
     assert "apiKey" in creds1 and "secret" in creds1 and "passphrase" in creds1
@@ -68,11 +68,11 @@ def test_executor_caches_api_creds(dryrun_config, tmp_path):
     creds2 = ex.ensure_api_credentials()
     assert creds1 == creds2
     # File should exist with chmod 600
-    assert dryrun_config.creds_cache_path.exists()
+    assert dryrun_config.cache_creds_path.exists()
 
 
 def test_executor_place_order_dryrun_returns_order_id(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     result = ex.place_order(
         token_id="123456789",
@@ -88,7 +88,7 @@ def test_executor_place_order_dryrun_returns_order_id(dryrun_config, tmp_path):
 
 
 def test_executor_place_order_rejects_invalid_price(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     for bad_price in (0, 1.0, 1.5, -0.1):
         result = ex.place_order(token_id="abc", side="BUY", price=bad_price, notional_usd=5.0)
@@ -97,7 +97,7 @@ def test_executor_place_order_rejects_invalid_price(dryrun_config, tmp_path):
 
 
 def test_executor_place_order_rejects_zero_size(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     result = ex.place_order(token_id="abc", side="BUY", price=0.5, notional_usd=0)
     assert result.success is False
@@ -105,7 +105,7 @@ def test_executor_place_order_rejects_zero_size(dryrun_config, tmp_path):
 
 
 def test_executor_idempotence_key_propagated(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     result = ex.place_order(
         token_id="123",
@@ -118,7 +118,7 @@ def test_executor_idempotence_key_propagated(dryrun_config, tmp_path):
 
 
 def test_executor_cancel_order_dryrun(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     result = ex.cancel_order("dryrun-12345")
     assert result.success is True
@@ -126,14 +126,14 @@ def test_executor_cancel_order_dryrun(dryrun_config, tmp_path):
 
 
 def test_executor_cancel_all_dryrun(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     result = ex.cancel_all()
     assert result.get("dry_run") is True
 
 
 def test_executor_status_reports_state(dryrun_config, tmp_path):
-    dryrun_config.creds_cache_path = tmp_path / "creds.json"
+    dryrun_config.cache_creds_path = tmp_path / "creds.json"
     ex = CLOBExecutor(dryrun_config).initialize()
     status = ex.status()
     assert status["initialized"] is True

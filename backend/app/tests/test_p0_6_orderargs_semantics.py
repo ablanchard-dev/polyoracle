@@ -30,7 +30,7 @@ def dry_executor(tmp_path):
         chain_id=137,
         signature_type=0,
         dry_run=True,
-        creds_cache_path=tmp_path / "creds.json",
+        cache_creds_path=tmp_path / "creds.json",
     )
     return CLOBExecutor(cfg).initialize()
 
