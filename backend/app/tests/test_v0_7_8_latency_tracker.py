@@ -45,11 +45,14 @@ def test_quantiles_handles_empty_path():
 
 def test_track_latency_context_manager_records():
     reset_tracker_for_tests()
+    # Sleep well above time.monotonic()'s Windows granularity (~15.6 ms via
+    # GetTickCount64). At 10 ms both monotonic reads can land in the same tick
+    # → elapsed reads 0 ms → flaky `max >= 5.0` (~1/5 on Windows; Linux CI is
+    # nanosecond-resolution and never hits it). 50 ms clears the tick reliably.
     with track_latency("ctx_test"):
-        time.sleep(0.01)  # 10ms
+        time.sleep(0.05)  # 50 ms — above Windows monotonic granularity
     q = get_tracker().quantiles("ctx_test")
     assert q["n"] == 1
-    # Allow generous tolerance (Windows clock granularity)
     assert q["max"] >= 5.0  # at least 5ms recorded
 
 

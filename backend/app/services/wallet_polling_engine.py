@@ -222,7 +222,15 @@ class TokenBucket:
         self.rate = rate_per_sec
         self.capacity = capacity if capacity is not None else max(1, int(rate_per_sec * 2))
         self.tokens = float(self.capacity)
-        self.last_refill = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0.0
+        # Constructed synchronously (often outside any running loop). In Py3.12
+        # asyncio.get_event_loop() RAISES when there is no current event loop —
+        # which made this crash in the full test suite once a prior test had
+        # closed the global loop (passed in isolation, failed in-suite). Use
+        # get_running_loop() and fall back to 0.0, matching the original intent.
+        try:
+            self.last_refill = asyncio.get_running_loop().time()
+        except RuntimeError:
+            self.last_refill = 0.0
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> None:
@@ -379,13 +387,20 @@ class WalletPollingEngine:
             # NANO/TINY/MICRO accept ELITE GOLD only; SMALL+ adds SILVER; ≥$10k
             # adds BRONZE. STRONG only when GOLD bucket and tier ≥ MEDIUM.
             if _bucket_filter_active:
-                # REFONTE 2026-05-21 : gate sur copyability_score (EV crypto
-                # validée) au lieu du WR global — cohorte EV-based.
+                # Reverted 2026-06 — the abandoned live-v2 merge (d1d7e05,
+                # "refonte cohorte EV-based") passed r.copyability_score here, but
+                # is_wallet_allowed_at_tier() gates on win_rate and copyability_score
+                # is unpopulated → every row rejected → empty cohort → silent CSV
+                # fallback (wrong wallets polled: low/STRONG leak in, new ELITE drop
+                # out). Restored to resolved_market_win_rate (what the function, the
+                # tie-breaker below, and the MFWR seed all use). A real EV-based gate
+                # would require changing is_wallet_allowed_at_tier too — re-do it
+                # properly there if the EV cohort is resumed.
                 rows = [
                     r for r in rows
                     if is_wallet_allowed_at_tier(
                         r.candidate_status,
-                        r.copyability_score,
+                        r.resolved_market_win_rate,
                         float(capital_total),
                     )
                 ]
@@ -396,7 +411,7 @@ class WalletPollingEngine:
                 p = 0.0
                 if (r.candidate_status or "") == "ELITE":
                     p += 1000.0
-                wr = float(r.copyability_score or 0)  # REFONTE 2026-05-21
+                wr = float(r.resolved_market_win_rate or 0)  # reverted 2026-06 (was copyability_score)
                 if wr >= 0.99:
                     p += 500.0
                 elif wr >= 0.95:

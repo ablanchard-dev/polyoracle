@@ -68,9 +68,14 @@ def test_unknown_classification_with_empty_db():
 
 def test_slot_bound_classification():
     """High max_pos utilization + slot blocks → slot-bound."""
+    from app.services.capital_allocator import _resolve_tier
     with _session() as s:
-        _seed_state(s, capital=100.0)  # NANO tier max_pos=24
-        _seed_open_positions(s, 24)  # 100% utilization
+        _seed_state(s, capital=100.0)  # NANO tier
+        # Read the live tier cap instead of hardcoding it — NANO max_pos was
+        # bumped 24→40 (op decision 2026-05-16, capital_allocator), which left
+        # this test seeding 60% utilization and misclassifying as capital-bound.
+        max_pos = int(_resolve_tier(100.0)["max_open_positions_cap"])
+        _seed_open_positions(s, max_pos)  # 100% utilization
         _seed_no_trade(s, "TOO_MANY_POSITIONS", 5)
         _seed_no_trade(s, "WIDE_SPREAD", 30)  # other code to bring sample size up
         m = compute_utilization_metrics(s, window_hours=2.0)
