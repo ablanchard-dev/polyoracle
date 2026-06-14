@@ -47,14 +47,6 @@ WHITELIST_PATH_FRAGMENTS = (
     "backend/app/services/risk_mode.py",
     # Backtest projection (kept for historical comparison)
     "backend/app/services/edge_validation_engine.py",
-    # Sync helper that dates back to v0.5.8 (legacy)
-    "backend/_sync_universe_to_wallets.py",
-    # One-off replay/archive scripts (start with leading underscore)
-    "backend/_capital_allocator_replay_v0_7_1.py",
-    "backend/_compare_risk_modes.py",
-    "backend/_run_v0_7_0_replay_scenarios.py",
-    "backend/_cap_exposure_replay_v0_5_11.py",
-    "backend/_generate_final_report.py",
     # Service comments that mention the legacy names in passing
     "backend/app/services/candidate_validation_service.py",
 )

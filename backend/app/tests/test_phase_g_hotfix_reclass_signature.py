@@ -35,7 +35,7 @@ def test_main_py_uses_correct_signature():
     """Inspect main.py source: it must NOT call run_weekly_reclass with the
     old buggy `(session, dry_run=False)` form."""
     from pathlib import Path
-    main_path = Path("/opt/app/polyoracle/backend/app/main.py")
+    main_path = Path(__file__).resolve().parents[1] / "main.py"
     src = main_path.read_text()
     # Find the call site
     assert "run_weekly_reclass(" in src, "main.py must import + call run_weekly_reclass"
@@ -56,7 +56,7 @@ def test_main_py_uses_correct_signature():
 def test_main_py_imports_required_modules():
     """The reclass loop also needs Path + Session imports nearby."""
     from pathlib import Path
-    main_path = Path("/opt/app/polyoracle/backend/app/main.py")
+    main_path = Path(__file__).resolve().parents[1] / "main.py"
     src = main_path.read_text()
     assert "from pathlib import Path" in src or "import pathlib" in src
     assert "from sqlmodel import Session" in src or "import sqlmodel" in src
