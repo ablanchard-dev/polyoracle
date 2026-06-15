@@ -163,6 +163,6 @@ def run_preflight(
 
 if __name__ == "__main__":
     # CLI smoke test
-    db = Path("/opt/app/polyoracle/data/polyoracle.db")
+    db = Path(__file__).resolve().parents[4] / "data" / "polyoracle.db"
     run_preflight(db_path=db, cohort_status="ELITE", min_cohort_size=50,
                   require_clob_pk=False)

@@ -43,7 +43,7 @@ EventType = Literal[
     "OPERATOR_INFO",
 ]
 
-_TELEGRAM_LOG = Path("/opt/app/polyoracle/backend/_smoke_strict_logs/telegram_alerts.log")
+_TELEGRAM_LOG = Path(__file__).resolve().parents[2] / "_smoke_strict_logs" / "telegram_alerts.log"
 _LAST_SENT: dict[str, float] = {}  # event_type → epoch seconds
 
 

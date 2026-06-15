@@ -262,8 +262,9 @@ if __name__ == "__main__":
     """Smoke : connect, log les 30 premiers trades cohort avec latency."""
     import sqlite3
     import sys
+    from pathlib import Path
 
-    DB = "/opt/app/polyoracle/data/polyoracle.db"
+    DB = str(Path(__file__).resolve().parents[4] / "data" / "polyoracle.db")
 
     async def main():
         # Load cohort

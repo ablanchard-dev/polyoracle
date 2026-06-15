@@ -11,7 +11,7 @@
 # run during a production-grade smoke (this is a destructive chaos drill).
 
 set -u
-ROOT="/opt/app/polyoracle"
+ROOT="/opt/polyoracle"
 LOG="$ROOT/backend/_smoke_strict_logs/chaos_test_$(date -u +%Y%m%dT%H%MZ).log"
 mkdir -p "$(dirname "$LOG")"
 

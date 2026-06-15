@@ -21,13 +21,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/opt/app/polyoracle/backend")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "backend"))
 from app.services.market_resolution_scanner import MarketResolutionScanner
 from app.services.polymarket.data_client import DataClient
 from app.services.polymarket.gamma_client import GammaClient
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
-OUT_DIR = Path("/opt/app/polyoracle/data/poly_sports_validation")
+DB = str(_REPO_ROOT / "data" / "polyoracle.db")
+OUT_DIR = _REPO_ROOT / "data" / "poly_sports_validation"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 ACT_CACHE = OUT_DIR / "activity.json"
 RES_CACHE = OUT_DIR / "resolutions.json"

@@ -8,15 +8,17 @@ import re
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
-sys.path.insert(0, "/opt/app/polyoracle/backend")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "backend"))
 from app.services.polymarket.gamma_client import GammaClient
 from app.services.polymarket.data_client import DataClient
 from app.services.market_resolution_scanner import MarketResolutionScanner
 
 MAX_MARKETS = 3000          # bornes runtime (~12 min au rate-limit 4/s)
-COHORT_FILE = "/opt/app/cohort_running_3574.txt"
-OUT = "/opt/app/d2_recent_winners_report.txt"
+COHORT_FILE = str(_REPO_ROOT / "data" / "cohort_running_3574.txt")
+OUT = str(_REPO_ROOT / "data" / "d2_recent_winners_report.txt")
 
 CRYPTO = re.compile(
     r"\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|ripple|bnb|doge|dogecoin|"

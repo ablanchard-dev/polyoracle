@@ -1,6 +1,6 @@
 """100 tests critiques — audit complet du strict run polyoracle.
 
-Tourne sur VPS. Sortie : /opt/app/polyoracle/data/audit_100/report.md
+Tourne sur VPS. Sortie : data/audit_100/report.md
 
 Chaque test renvoie status : PASS / FAIL / WARN / INFO / SKIP.
 """
@@ -16,16 +16,17 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/opt/app/polyoracle/backend")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "backend"))
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
-REJECT_DB = "/opt/app/polyoracle/data/strict_reject_ledger.db"
+DB = str(_REPO_ROOT / "data" / "polyoracle.db")
+REJECT_DB = str(_REPO_ROOT / "data" / "strict_reject_ledger.db")
 STRICT_CUT = "2026-05-21 18:33:37"
 CUT_DT = datetime.fromisoformat(STRICT_CUT.replace(" ", "T") + "+00:00")
 CUT_MS = int(CUT_DT.timestamp() * 1000)
-OUT_DIR = Path("/opt/app/polyoracle/data/audit_100")
+OUT_DIR = _REPO_ROOT / "data" / "audit_100"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-CODE = Path("/opt/app/polyoracle/backend")
+CODE = _REPO_ROOT / "backend"
 
 results: list[tuple] = []
 

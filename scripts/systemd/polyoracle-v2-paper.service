@@ -1,6 +1,6 @@
 [Unit]
 Description=Polymarket V2 paper — sub-second copy-trading (Phase A: detection + lean gates, no execution)
-Documentation=file:///opt/app/polyoracle/backend/app/services/polymarket_v2/
+Documentation=file:///opt/polyoracle/backend/app/services/polymarket_v2/
 After=network-online.target
 Wants=network-online.target
 # Service indépendant du legacy polyoracle-backend.service (coexistence)
@@ -8,8 +8,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/app/polyoracle/backend
-ExecStart=/opt/app/polyoracle/backend/.venv/bin/python -m app.services.polymarket_v2.launch_paper
+WorkingDirectory=/opt/polyoracle/backend
+ExecStart=/opt/polyoracle/backend/.venv/bin/python -m app.services.polymarket_v2.launch_paper
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -20,7 +20,7 @@ SyslogIdentifier=polyoracle-v2-paper
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/opt/app/polyoracle/data/v2_paper /tmp
+ReadWritePaths=/opt/polyoracle/data/v2_paper /tmp
 
 # Resources
 MemoryMax=1G

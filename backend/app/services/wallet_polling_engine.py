@@ -1121,7 +1121,7 @@ class WalletPollingEngine:
                 try:
                     import json as _json
                     import os as _os
-                    _snap_dir = "/opt/app/polyoracle/data/_lane_snapshots"
+                    _snap_dir = str(Path(__file__).resolve().parents[3] / "data" / "_lane_snapshots")
                     _os.makedirs(_snap_dir, exist_ok=True)
                     _snap = {
                         "snapshot_at": now.isoformat(),

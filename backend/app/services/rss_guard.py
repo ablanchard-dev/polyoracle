@@ -38,7 +38,7 @@ RSS_GUARD_SUSTAINED_S = int(os.environ.get("RSS_GUARD_SUSTAINED_S", "120"))
 RSS_GUARD_CHECK_INTERVAL_S = int(os.environ.get("RSS_GUARD_CHECK_INTERVAL_S", "30"))
 RSS_GUARD_TRIGGER_EXIT = bool(int(os.environ.get("RSS_GUARD_TRIGGER_EXIT", "1")))
 
-_RSS_LOG = Path("/opt/app/polyoracle/backend/_smoke_strict_logs/rss_guard.log")
+_RSS_LOG = Path(__file__).resolve().parents[2] / "_smoke_strict_logs" / "rss_guard.log"
 
 
 def _read_rss_kb() -> int:

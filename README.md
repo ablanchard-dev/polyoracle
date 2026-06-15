@@ -200,9 +200,11 @@ Endpoints:
 
 UI: a green `Validated Paper Universe (v0.5.4)` panel at the top of `/wallets` shows the live counts, an "Awaiting operator signal" warning, and a rebuild button.
 
-## v0.5.2 risk modes — SAFE / AGGRESSIVE / FULL_PAPER
+## v0.5.2 risk modes — SAFE / AGGRESSIVE / FULL_PAPER (legacy)
 
-Three named profiles drive the paper-auto-trade gate. Active profile is read from `RiskModeState` (default `SAFE`, configurable via `.env` `RISK_MODE` and the `/risk/mode` endpoint or the UI selector in `/control`). Live execution is permanently blocked on every profile.
+> **Note (v0.7.2):** the named modes below are **deprecated**. The current runtime is a single `CapitalAllocator` with capital-aware sliding-scale tightening (caps driven by capital tier, not by a named profile). The `SAFE` / `AGGRESSIVE` / `FULL_PAPER` profiles are retained for the historical edge-validation backtest projections, a legacy `risk_engine` adapter, and their tests — not as the production gate. This section documents that legacy mechanism.
+
+Three named profiles drive the (legacy) paper-auto-trade gate. Active profile is read from `RiskModeState` (default `SAFE`, configurable via `.env` `RISK_MODE` and the `/risk/mode` endpoint or the UI selector in `/control`). Live execution is permanently blocked on every profile.
 
 | Profile | Allowed status | Min sample | Confidence | Risk/trade | Wallet | Market | Total | Open | Daily |
 |---|---|---:|---|---:|---:|---:|---:|---:|---:|
@@ -218,7 +220,7 @@ Live comparison on the top-50 strict ELITE/STRONG wallets (the bot offered the S
 | AGGRESSIVE | 15 | 35 | 15.00% | open-positions cap (15) hit |
 | FULL_PAPER | 41 | 9 | 41.00% | total-exposure cap (40%) hit |
 
-Invariant locked in: SAFE ≤ AGGRESSIVE ≤ FULL_PAPER. The kill switch and exposure caps still apply in all three modes; the only thing FULL_PAPER removes is the daily/per-mode trade-count cap.
+What is actually enforced (and covered by `test_risk_modes.py`): each profile gates entries on its own status / sample / confidence / exposure thresholds; live execution is permanently blocked on every profile; and the kill switch and exposure caps (per-trade, per-wallet, per-market, total) still apply in all three modes. The only thing FULL_PAPER removes is the daily/per-mode trade-count cap — the exposure caps stay. The profile limits are not a single monotonic ordering across every column, and no test asserts a `SAFE ≤ AGGRESSIVE ≤ FULL_PAPER` invariant.
 
 The strict ELITE rule was tightened in v0.5.2: a wallet now needs **HIGH** win-rate confidence (i.e. resolved-market sample ≥ 100) to land in ELITE. A 100% win rate on sample 99 / MEDIUM confidence stays in STRONG. The 730-day re-classification pass moved 1 borderline wallet from ELITE→STRONG, giving the final tier breakdown:
 
@@ -526,7 +528,7 @@ cd polyoracle/backend
 pytest
 ```
 
-An extensive automated test suite (**800+ tests**) covers the conservative win-rate engine, wallet classification, the capital/risk allocator, the paper-trading engine, the discovery + out-of-sample validation pipeline, and the safety gates — kill switch, exposure caps and the permanent live-execution lock (e.g. a 100% win rate on a thin sample / MEDIUM confidence can never become ELITE; SAFE ≤ AGGRESSIVE ≤ FULL_PAPER is an enforced invariant).
+An extensive automated test suite (**800+ tests**) covers the conservative win-rate engine, wallet classification, the capital/risk allocator, the paper-trading engine, the discovery + out-of-sample validation pipeline, and the safety gates — kill switch, exposure caps and the permanent live-execution lock (e.g. a 100% win rate on a thin sample / MEDIUM confidence can never become ELITE; no profile can enable live execution).
 
 Frontend build:
 

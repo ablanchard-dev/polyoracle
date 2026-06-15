@@ -67,8 +67,9 @@ async def on_startup() -> None:
         _settings = get_settings()
         # Resolve db_path from settings.database_url or fall back to canonical path
         _db_url = (_settings.database_url or "").replace("sqlite:///", "")
-        _db_path = Path(_db_url) if _db_url else Path("/opt/app/polyoracle/data/polyoracle.db")
-        _backup_dir = Path("/opt/app/polyoracle/data/_reclass_backups")
+        _data_dir = Path(__file__).resolve().parents[2] / "data"
+        _db_path = Path(_db_url) if _db_url else _data_dir / "polyoracle.db"
+        _backup_dir = _data_dir / "_reclass_backups"
         _backup_dir.mkdir(parents=True, exist_ok=True)
 
         # HOTFIX 2026-05-13 14:00 UTC — disk leak postmortem:

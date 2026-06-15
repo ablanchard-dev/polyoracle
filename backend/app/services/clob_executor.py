@@ -92,7 +92,9 @@ class CLOBExecutorConfig:
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     api_passphrase: Optional[str] = None
-    cache_creds_path: str = "/opt/app/polyoracle/backend/_clob_creds_cache.json"
+    cache_creds_path: str = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "backend", "_clob_creds_cache.json")
     dry_run: bool = False
     max_slip_vs_vwap_pct: float = DEFAULT_MAX_SLIP_VS_VWAP_PCT
     max_slip_vs_gamma_pct: float = DEFAULT_MAX_SLIP_VS_GAMMA_PCT

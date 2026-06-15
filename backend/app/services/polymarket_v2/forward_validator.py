@@ -62,7 +62,7 @@ except Exception:  # pragma: no cover
     def infer_category(*, gamma_category=None, slug=None, question=None):
         return "Unknown"
 
-EVENTS_PATH = Path("/opt/app/polyoracle/data/v2_paper/events.jsonl")
+EVENTS_PATH = Path(__file__).resolve().parents[4] / "data" / "v2_paper" / "events.jsonl"
 PRICE_HISTORY_URL = ("https://clob.polymarket.com/prices-history?"
                      "market={token_id}&interval=1d&fidelity=15")
 # R1 : 1 condition_id par appel (Gamma ne supporte pas batch multi-condition_ids).
@@ -97,8 +97,9 @@ CATEGORY_LABELS = [
 ]
 
 # Cache disk pour catégories (évite re-fetch entre runs)
-CATEGORY_CACHE_PATH = Path("/opt/app/polyoracle/data/v2_paper/category_cache.json")
-PRICE_HISTORY_CACHE_PATH = Path("/opt/app/polyoracle/data/v2_paper/price_history_cache.json")
+_V2_PAPER_DIR = Path(__file__).resolve().parents[4] / "data" / "v2_paper"
+CATEGORY_CACHE_PATH = _V2_PAPER_DIR / "category_cache.json"
+PRICE_HISTORY_CACHE_PATH = _V2_PAPER_DIR / "price_history_cache.json"
 
 
 def fetch_price_history(token_id: str, timeout_s: float = 5.0) -> list[dict]:

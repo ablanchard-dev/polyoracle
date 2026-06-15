@@ -24,7 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, "/opt/app/polyoracle/backend")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.services.polymarket_v2.bayesian_price_model import BayesianPriceModel
 from app.services.polymarket_v2.fast_executor import FastExecutor
@@ -48,8 +48,9 @@ FAST_EXECUTOR_ENABLED = os.getenv("FAST_EXECUTOR_ENABLED", "true").lower() == "t
 FAST_EXECUTOR_DRY_RUN = os.getenv("FAST_EXECUTOR_DRY_RUN", "true").lower() == "true"
 
 
-DB_PATH = Path("/opt/app/polyoracle/data/polyoracle.db")
-PAPER_DIR = Path("/opt/app/polyoracle/data/v2_paper")
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+DB_PATH = _REPO_ROOT / "data" / "polyoracle.db"
+PAPER_DIR = _REPO_ROOT / "data" / "v2_paper"
 PAPER_DIR.mkdir(parents=True, exist_ok=True)
 EVENTS_LOG = PAPER_DIR / "events.jsonl"
 LAUNCHER_LOG = PAPER_DIR / "launcher.log"

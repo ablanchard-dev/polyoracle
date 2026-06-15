@@ -14,8 +14,9 @@ Exit 0 si aucun [FAIL], 1 sinon.
 """
 import sqlite3, http.client, json, subprocess, sys, os
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
-BACKEND = "/opt/app/polyoracle/backend"
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(_REPO_ROOT, "data", "polyoracle.db")
+BACKEND = os.path.join(_REPO_ROOT, "backend")
 ENV_FILE = f"{BACKEND}/.env"
 HOST, PORT = "127.0.0.1", 8000
 

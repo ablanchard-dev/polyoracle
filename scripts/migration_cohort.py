@@ -6,8 +6,9 @@ dans best_category. Re-tag les vieux ELITE WR-global non validés -> LONG_SLEEVE
 DRY-RUN par défaut. --apply pour écrire.
 """
 import sqlite3, csv, sys, time
+from pathlib import Path
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
+DB = str(Path(__file__).resolve().parents[1] / "data" / "polyoracle.db")
 DRY = "--apply" not in sys.argv
 
 def load(f):

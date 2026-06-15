@@ -20,9 +20,11 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
+from pathlib import Path
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
-COHORT_FILE = "/opt/app/cohort_running_3574.txt"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DB = str(_REPO_ROOT / "data" / "polyoracle.db")
+COHORT_FILE = str(_REPO_ROOT / "data" / "cohort_running_3574.txt")
 FEE = 0.01  # frais ~1% du notional
 
 CRYPTO = re.compile(

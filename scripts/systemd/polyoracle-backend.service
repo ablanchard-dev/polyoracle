@@ -21,14 +21,14 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=dexter
-Group=dexter
-WorkingDirectory=/opt/app/polyoracle/backend
-Environment="PYTHONPATH=/opt/app/polyoracle/backend"
+User=polyoracle
+Group=polyoracle
+WorkingDirectory=/opt/polyoracle/backend
+Environment="PYTHONPATH=/opt/polyoracle/backend"
 Environment="PYTHONUNBUFFERED=1"
-EnvironmentFile=/opt/app/polyoracle/backend/.env
+EnvironmentFile=/opt/polyoracle/backend/.env
 
-ExecStart=/opt/app/polyoracle/backend/.venv/bin/python dev_server.py
+ExecStart=/opt/polyoracle/backend/.venv/bin/python dev_server.py
 
 # Resource limits (D5 RSS guard preview — systemd-level cap as belt + braces)
 MemoryMax=3G
@@ -49,7 +49,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/app/polyoracle/data /opt/app/polyoracle/backend/_smoke_strict_logs /opt/app/polyoracle/backend/_backups_v0_7_8_smoke_pre
+ReadWritePaths=/opt/polyoracle/data /opt/polyoracle/backend/_smoke_strict_logs /opt/polyoracle/backend/_backups_v0_7_8_smoke_pre
 
 # WatchdogSec DISABLED 2026-05-13 — le bot n'implémente pas sd_notify(WATCHDOG=1).
 # Activer WatchdogSec sans sd_notify = systemd attend un ping qui n'arrive jamais

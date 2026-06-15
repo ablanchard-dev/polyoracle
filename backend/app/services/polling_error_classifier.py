@@ -30,8 +30,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-DEFAULT_LOG_PATH = Path("/opt/app/polyoracle/backend/_smoke_strict_logs/backend.dev.err.log")
-FALLBACK_LOG_PATH = Path("/opt/app/polyoracle/backend/backend.dev.err.log")
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_PATH = _BACKEND_ROOT / "_smoke_strict_logs" / "backend.dev.err.log"
+FALLBACK_LOG_PATH = _BACKEND_ROOT / "backend.dev.err.log"
 
 # Pattern catalog — order matters: most-specific first
 PATTERN_MAP: list[tuple[str, re.Pattern[str]]] = [

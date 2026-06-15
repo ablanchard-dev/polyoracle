@@ -597,7 +597,7 @@ def compute_m1_v3_report(
     if write_csv:
         from pathlib import Path
         import csv as _csv
-        out = Path("/opt/app/polyoracle/data/exports") / f"m1_v3_forensic_{datetime.now(UTC).strftime('%Y%m%dT%H%MZ')}.csv"
+        out = Path(__file__).resolve().parents[3] / "data" / "exports" / f"m1_v3_forensic_{datetime.now(UTC).strftime('%Y%m%dT%H%MZ')}.csv"
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", newline="") as f:
             writer = _csv.DictWriter(f, fieldnames=list(asdict(records[0]).keys()))

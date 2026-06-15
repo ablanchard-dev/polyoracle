@@ -48,7 +48,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-SHADOW_DIR = Path("/opt/app/polyoracle/data/_fresh_api_shadow")
+SHADOW_DIR = Path(__file__).resolve().parents[3] / "data" / "_fresh_api_shadow"
 STATE_FILE = SHADOW_DIR / "state.json"
 CYCLES_LOG = SHADOW_DIR / "cycles.log"
 
@@ -173,7 +173,7 @@ def summarize_trades(trades: list[dict]) -> dict:
 
 def load_cold_addresses_from_snapshot() -> list[str]:
     """Read latest lane snapshot, return addrs classified COLD."""
-    snap_path = Path("/opt/app/polyoracle/data/_lane_snapshots/lane_snapshot_latest.json")
+    snap_path = Path(__file__).resolve().parents[3] / "data" / "_lane_snapshots" / "lane_snapshot_latest.json"
     if not snap_path.exists():
         logger.warning("FreshApiShadow: no lane snapshot found — cannot pick COLD")
         return []

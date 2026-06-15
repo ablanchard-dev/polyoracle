@@ -100,9 +100,10 @@ STALE_CHECK_INTERVAL_S = 30.0
 # Rejected ledger : fichier SQLite SÉPARÉ (zéro contention avec polyoracle.db).
 # Logge chaque rejet de gate strict pour mesurer a posteriori l'EV des trades
 # qu'on ne prend pas (BAND_MISMATCH, LOW_LIQ, CLOB_NOT_FILLABLE, SELL...).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REJECT_LEDGER_PATH = os.environ.get(
     "STRICT_REJECT_LEDGER_PATH",
-    "/opt/app/polyoracle/data/strict_reject_ledger.db")
+    os.path.join(_REPO_ROOT, "data", "strict_reject_ledger.db"))
 
 
 def is_ws_activity_enabled() -> bool:

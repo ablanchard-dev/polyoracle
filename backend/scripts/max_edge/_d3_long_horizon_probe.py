@@ -7,8 +7,9 @@ est trop peu peuplée. 100% local. Join sur condition_id.
 import re
 import sqlite3
 from collections import defaultdict
+from pathlib import Path
 
-DB = "/opt/app/polyoracle/data/polyoracle.db"
+DB = str(Path(__file__).resolve().parents[3] / "data" / "polyoracle.db")
 SHORT_CRYPTO = re.compile(r"up or down|haut ou bas|vers le haut", re.I)
 
 

@@ -84,7 +84,7 @@ def _seed_mfwr_rows(engine, n: int) -> None:
 
 def test_startup_refuses_lumenia_url():
     """An env DATABASE_URL containing 'lumenia' must trigger RuntimeError."""
-    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///C:/Users/user/Downloads/LUMENIA_MVP/data/lumenia.db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///C:/other-project/data/lumenia.db"}):
         from app.database import _validate_database_url
         with pytest.raises(RuntimeError, match=r"FATAL DATABASE_URL leak.*lumenia"):
             _validate_database_url()
@@ -92,7 +92,7 @@ def test_startup_refuses_lumenia_url():
 
 def test_startup_refuses_downloads_path():
     """An env DATABASE_URL with '/Downloads/' (case-insensitive) must fail."""
-    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///C:/Users/user/Downloads/anyproject/data.db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:////var/data/Downloads/anyproject/data.db"}):
         from app.database import _validate_database_url
         with pytest.raises(RuntimeError, match=r"FATAL DATABASE_URL leak.*[Dd]ownloads"):
             _validate_database_url()
@@ -100,7 +100,7 @@ def test_startup_refuses_downloads_path():
 
 def test_startup_refuses_temp_path():
     """An env DATABASE_URL with '/Temp/' must fail."""
-    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///C:/Users/user/AppData/Local/Temp/scratch.db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "sqlite:////var/Temp/scratch.db"}):
         from app.database import _validate_database_url
         with pytest.raises(RuntimeError, match=r"FATAL DATABASE_URL leak.*[Tt]emp"):
             _validate_database_url()

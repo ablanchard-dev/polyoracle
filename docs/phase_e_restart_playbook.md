@@ -14,7 +14,7 @@
 ### 1. Vérifier git propre + sync
 
 ```bash
-cd /opt/app/polyoracle
+cd ~/polyoracle
 git status   # doit montrer 0 modifs uncommitted importantes
 git log --oneline -5
 ```
@@ -33,7 +33,7 @@ Confirme dans output :
 ### 3. Backend restart (vrai)
 
 ```bash
-cd /opt/app/polyoracle/backend
+cd ~/polyoracle/backend
 nohup .venv/bin/python dev_server.py > backend.dev.log 2> backend.dev.err.log < /dev/null &
 disown
 ```
@@ -126,7 +126,7 @@ Une fois 24h post-restart validés (cadence + WR + no crash) :
 Si tout va bien, on peut lancer tout en une commande :
 
 ```bash
-cd /opt/app/polyoracle/backend && \
+cd ~/polyoracle/backend && \
 PYTHONPATH=. .venv/bin/python _set_p0_fix_applied_at.py && \
 nohup .venv/bin/python dev_server.py > backend.dev.log 2> backend.dev.err.log < /dev/null &
 disown

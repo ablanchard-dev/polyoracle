@@ -9,14 +9,14 @@
 #      Repo est PRIVÉ donc HTTPS clone échoue — SSH obligatoire.
 #   3. Stop bot local: kill -TERM $(pgrep -f dev_server.py)
 #   4. Snapshot local DB: cp data/polyoracle.db data/_backup_pre_migration_$(date +%s).db
-#   5. Transfer DB vers VPS: scp data/polyoracle.db root@<IP_VPS>:/opt/app/polyoracle/data/polyoracle.db
+#   5. Transfer DB vers VPS: scp data/polyoracle.db root@<IP_VPS>:/home/polyoracle/polyoracle/data/polyoracle.db
 #
 # Ce script ne lance PAS le bot — il prépare l'environnement.
 # Le start du bot est manuel après vérification.
 
 set -euo pipefail
 
-POLYORACLE_USER="${POLYORACLE_USER:-dexter}"
+POLYORACLE_USER="${POLYORACLE_USER:-polyoracle}"
 POLYORACLE_HOME="/home/${POLYORACLE_USER}/polyoracle"
 
 echo "=== POLYORACLE VPS deployment ==="
