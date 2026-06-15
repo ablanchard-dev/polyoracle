@@ -107,7 +107,7 @@ disown
 - Si beaucoup UNKNOWN_CATEGORY persiste → P0.1 fix incomplet, débugger
 - Si peu de trades mais bons résultats → patience, c'est juste les heures creuses
 
-**Si WR drop <80%** → cascade Max Edge (spec.md règle 7) :
+**Si WR drop <80%** → cascade Max Edge (operator spec règle 7) :
 1. Mesurer où l'edge fuit
 2. Audit wallets actifs
 3. Reclass B22 (P1 task)

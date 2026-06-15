@@ -1,4 +1,4 @@
-"""CLOB retry queue service — 2026-05-14 review Round 9 strict-compatible fix.
+"""CLOB retry queue service — 2026-05-14 Round 9 review strict-compatible fix.
 
 Quand un audit ELITE strong-edge + tq>=70 + liq>0 est rejeté UNIQUEMENT pour
 orderbook BAD/UNTRADABLE (CLOB 404 sur markets crypto 5min auto-générés), on

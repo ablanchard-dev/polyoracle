@@ -1,4 +1,4 @@
-"""Polling error classifier (POLYORACLE 2026-05-11, P0.4 review Round 4).
+"""Polling error classifier (POLYORACLE 2026-05-11, P0.4 Round 4 review).
 
 Le compteur global `polling_errors` mélange tout : CLOB 404 (= noise attendu),
 5xx Polymarket transient (= retried, OK), 429 rate limit (= signal critique),
@@ -16,7 +16,7 @@ counter `polling_errors` de BotLoopState, et classifie en 3 buckets :
 Expose via GET `/observability/polling-errors`. Aucune mutation, aucun impact
 runtime. Lecture seule du log + DB.
 
-Verbatim review :
+Spec (review) :
 > "Si `429 > 100/h` ou `critical_errors > 200/h`, on déclenche backoff
 >  exponentiel, pause rate bump, alert Telegram, pas de live tant que rouge."
 """

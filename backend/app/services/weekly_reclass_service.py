@@ -76,7 +76,7 @@ DEMOTE_THRESHOLD_WIN_RATE: float = DEMOTE_ELITE_MIN_WIN_RATE
 # Backup retention
 BACKUP_RETENTION_DAYS: int = 30
 
-# 2026-05-16 — Edge decay auto-demote (spec.md règle 7 cascade étape 2).
+# 2026-05-16 — Edge decay auto-demote (operator spec règle 7 cascade étape 2).
 # Adds a ROLLING WR check on paper trade history. If a wallet's lifetime
 # stats still pass ELITE bar but its recent paper performance is decayed,
 # auto-demote at next daily cron pass. Safeguard : fallback to lifetime-only
@@ -199,7 +199,7 @@ def _evaluate_for_promotion(row, current_status: str) -> Optional[ReclassDecisio
 
     2026-05-09 — B1 fix: use REAL sample (resolved_winning + resolved_losing),
     not resolved_markets_traded which inflates by including unresolved scalped
-    markets. spec.md spec: 'sample = wins + losses CONFIRMÉS'.
+    markets. Operator spec: 'sample = wins + losses CONFIRMÉS'.
     """
     resolved = int((row.resolved_winning_markets or 0) + (row.resolved_losing_markets or 0))
     win_rate = float(row.resolved_market_win_rate or 0)
@@ -235,7 +235,7 @@ def _evaluate_for_demotion(row, current_status: str, session=None) -> Optional[R
     2026-05-09 — B1 fix: use REAL sample (W+L confirmés), not resolved_markets_traded.
     2026-05-16 — Edge decay check : if session provided, also check rolling paper
     WR. Lifetime-OK ELITE with rolling_30 WR < ROLLING_MIN_WR_FOR_ELITE on sample
-    ≥ ROLLING_MIN_SAMPLE → auto-demote ELITE→STRONG (spec.md règle 7 cascade
+    ≥ ROLLING_MIN_SAMPLE → auto-demote ELITE→STRONG (operator spec règle 7 cascade
     étape 2 'edge decay'). Safeguard : sample < threshold = fallback lifetime only.
     """
     resolved = int((row.resolved_winning_markets or 0) + (row.resolved_losing_markets or 0))

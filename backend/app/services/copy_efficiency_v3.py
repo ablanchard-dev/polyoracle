@@ -1,4 +1,4 @@
-"""M1 v3 — Copy efficiency forensic-grade (review Round 6, 2026-05-12).
+"""M1 v3 — Copy efficiency forensic-grade (Round 6 review, 2026-05-12).
 
 Replaces v2 simplifications with rigorous split metrics + correct SELL handling.
 
@@ -29,7 +29,7 @@ v3 splits the single ratio into 5 distinct measurements:
    (= what the wallet really made via their own exit strategy).
    Diagnostic only — NOT a gate metric (wallet exits may differ from bot exits).
 
-Gates for live (per review Round 6):
+Gates for live (per the Round 6 review):
 - join_quality_score ≥ 0.95
 - side_mapping_quality ≥ 0.95
 - copy_entry_efficiency ≥ 0.70
@@ -251,7 +251,7 @@ def _compute_source_counterfactual_pnl_per_dollar(
     Returns (pnl_per_dollar, exclusion_reason). pnl_per_dollar=None means
     excluded from copy_resolved_efficiency calc.
 
-    Rules per review Round 6:
+    Rules per the Round 6 review:
     - BUY_ENTRY: long position, pnl = (settlement - entry) per share.
     - SELL_SHORT_OPEN: short position, pnl = (entry - settlement) per share.
     - SELL_EXIT: EXCLUDE (source closed, bot opened new exposure — non comparable).
@@ -564,7 +564,7 @@ def compute_m1_v3_report(
     # Bot PnL total
     bot_pnl_total = sum(r.bot_pnl for r in records)
 
-    # Alerts (live gates per review Round 6, recalibrated 2026-05-12 for additive metrics)
+    # Alerts (live gates per the Round 6 review, recalibrated 2026-05-12 for additive metrics)
     alerts: list[str] = []
     if join_quality < 0.95:
         alerts.append(f"join_quality_score {join_quality:.2f} < 0.95")

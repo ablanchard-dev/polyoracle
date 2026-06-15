@@ -367,7 +367,7 @@ def cat_E():
            "non audité auto", "")
 
     # 42 — wallets morts
-    record(42, "E", "ELITE 0 activity 30j", "INFO", "voir spec.md memory zombie audit", "")
+    record(42, "E", "ELITE 0 activity 30j", "INFO", "voir la spec memory zombie audit", "")
 
     # 43 — _elite_paper_bypass OFF en strict
     paper_strict = has("app/services/capital_allocator.py", r"PAPER_LIVE_STRICT.*=.*True|paper_live_strict_mode")

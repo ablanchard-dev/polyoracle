@@ -1,4 +1,4 @@
-"""P4-C copyable_wallet_score engine (P1, review Round 8 — 2026-05-12).
+"""P4-C copyable_wallet_score engine (P1, Round 8 review — 2026-05-12).
 
 Computes per-wallet a single score [0, 1] that measures HOW COPIABLE a wallet
 is by THIS bot, not just how good the wallet is in absolute terms. Two
@@ -6,7 +6,7 @@ wallets can have wr=99% but be very different to copy:
   - one trades 5min crypto where we poll fast → high copyability
   - one trades 90-day politics where we never see the move → low copyability
 
-Formula (review Round 8 verbatim):
+Formula (Round 8 review spec):
     score =
       0.20 * resolved_wr_quality        # Wilson 95% LB on (W+L)
     + 0.15 * sample_size_confidence     # sqrt(min(W+L, 1000) / 1000)
@@ -87,7 +87,7 @@ SAMPLE_SATURATION = 1000
 class CopyableScoreBreakdown:
     wallet_address: str
     score: float | None
-    # P4-C v2 (review audit 2026-05-13): explicit decisional flag.
+    # P4-C v2 (audit 2026-05-13): explicit decisional flag.
     # decisional=False means: partial scoring, DO NOT use for promotion/lane
     # decisions. Score is informational only.
     decisional: bool = False
@@ -400,7 +400,7 @@ def compute_wallet_score(
     breakdown.weights_applied = {k: WEIGHTS[k] for k in available}
     breakdown.weights_total_applied = round(weight_total_avail, 4)
 
-    # P4-C v2 (review audit 2026-05-13): decisional flag.
+    # P4-C v2 (audit 2026-05-13): decisional flag.
     # Partial scoring (< 6/8 sub-scores) is informational only — cannot
     # be used for promotion / lane decisions.
     breakdown.sub_scores_available = len(available)

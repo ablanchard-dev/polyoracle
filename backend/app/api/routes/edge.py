@@ -45,7 +45,7 @@ def get_copy_efficiency(
     """M1 v2 copy_efficiency report (DEPRECATED — use /copy-efficiency-v3).
 
     v2 status: M1_V2_FIXED_NEGATIVE_BUG_BUT_RATIO_NEEDS_VALIDATION.
-    review Round 6 (2026-05-12) flagged the 'treat SELL as BUY' simplification
+    Round 6 review (2026-05-12) flagged the 'treat SELL as BUY' simplification
     as unacceptable. Kept for back-compat / dashboard until UI cuts over."""
     from app.services.copy_efficiency_engine import copy_efficiency_payload
     return copy_efficiency_payload(session, window=window)
@@ -57,7 +57,7 @@ def get_copy_efficiency_v3(
     write_csv: bool = False,
     session: Session = Depends(get_session),
 ) -> dict:
-    """M1 v3 forensic-grade copy_efficiency (review Round 6 — 2026-05-12).
+    """M1 v3 forensic-grade copy_efficiency (Round 6 review — 2026-05-12).
 
     Splits the suspicious v2 global_ratio=10.03 into 5 distinct metrics:
     - join_quality_score (% exact_match wallet+market+side+outcome)
@@ -120,7 +120,7 @@ def get_wallet_weights(
 
 @router.get("/category-breakdown-resolved")
 def category_breakdown_resolved(session: Session = Depends(get_session)) -> dict:
-    """P0.5 (review Round 4 — 2026-05-11): breakdown by RESOLVED category.
+    """P0.5 (Round 4 review — 2026-05-11): breakdown by RESOLVED category.
 
     The legacy /edge/categories shows Market.category which is often NULL/Unknown.
     This endpoint extracts the resolved_category from PaperTrade.close_reason

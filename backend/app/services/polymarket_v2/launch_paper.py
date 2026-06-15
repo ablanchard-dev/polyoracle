@@ -70,7 +70,7 @@ MAX_CONCURRENT = 8
 MAX_NOTIONAL_PER_TRADE = 25.0
 MAX_TOTAL_EXPOSURE = 80.0
 
-# R-based sizing (operator spec, spec.md — remplace le bug $20 fixe).
+# R-based sizing (operator spec — remplace le bug $20 fixe).
 # R = paper_capital × RISK_PER_TRADE ; target = R × current_r_multiplier
 # (state machine 2R win / 1R loss, lue depuis BotState), floor MIN_STAKE,
 # cap 2R. À $100 NANO : R=$1 → $1 (1R losing) ou $2 (2R winning).
@@ -133,7 +133,7 @@ def load_cohort() -> set[str]:
 def read_bot_state_sizing() -> tuple[float, float]:
     """(paper_capital, current_r_multiplier) depuis BotState id=1.
 
-    BotState est la source of truth (spec.md P5-A). Fallback NANO $100 / 1R
+    BotState est la source of truth (operator spec P5-A). Fallback NANO $100 / 1R
     si la lecture échoue — jamais de crash sizing."""
     try:
         conn = sqlite3.connect(str(DB_PATH))

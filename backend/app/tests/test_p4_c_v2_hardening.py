@@ -1,4 +1,4 @@
-"""P4-C v2 hardening tests (review audit 2026-05-13).
+"""P4-C v2 hardening tests (audit 2026-05-13).
 
 Verifies that partial-scoring breakdowns are marked `decisional=False` —
 they cannot be used to make promotion / lane decisions until enough
@@ -81,5 +81,5 @@ def test_partial_score_can_be_high_but_must_not_be_decisional(session):
     # But decisional must STILL be False (only 3/8 sub-scores)
     assert breakdown.decisional is False, (
         f"Score={breakdown.score:.4f} is high but decisional must remain False — "
-        f"review Round 8: 'do not activate priority lane on partial scoring'."
+        f"Round 8 review: 'do not activate priority lane on partial scoring'."
     )

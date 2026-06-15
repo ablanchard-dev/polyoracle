@@ -1,4 +1,4 @@
-"""Tests CLOB retry queue — 2026-05-14 review Round 9 strict-compatible fix.
+"""Tests CLOB retry queue — 2026-05-14 Round 9 review strict-compatible fix.
 
 Pinne le contrat critique :
 - maybe_queue ne queue QUE si toutes les conditions strict sont met

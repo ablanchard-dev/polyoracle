@@ -5,7 +5,7 @@ markets without a category. But many Market rows have `category=NULL` even
 though the data exists elsewhere (ResolvedMarketRecord, slug, question).
 Result: 811/1318 (62%) of paper trades were rejected unnecessarily.
 
-P0.1 (review Round 8 — 2026-05-12): the previous version called
+P0.1 (Round 8 review — 2026-05-12): the previous version called
 `session.get(ResolvedMarketRecord, market_id)` which uses the primary key
 (numeric market_id). When the caller passes a hex `condition_id` (common in
 the paper-trade pipeline — `PaperTrade.market_id` stores the hex form), the

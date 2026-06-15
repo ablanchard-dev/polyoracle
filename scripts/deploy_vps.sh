@@ -2,7 +2,7 @@
 # POLYORACLE — déploiement VPS Hostinger Boston (ou compatible Ubuntu 24.04)
 # Usage: à exécuter SUR le VPS après SSH-ing in en tant que root ou sudo user
 #
-# Pré-requis local (sur ton PC Lyon) avant ce script:
+# Pré-requis local (sur ta machine locale) avant ce script:
 #   1. ssh-copy-id root@<IP_VPS> (= ta clé SSH publique installée sur le VPS)
 #   2. Sur le VPS : générer une SSH key ed25519 et l'ajouter comme deploy key
 #      (read+write) sur le repo GitHub privé ablanchard-dev/polyoracle.

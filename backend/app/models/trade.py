@@ -38,7 +38,7 @@ class PublicTrade(SQLModel, table=True):
 
 
 class WalletMarketResolutionAudit(SQLModel, table=True):
-    """P0 ledger (review audit 2026-05-13) — per-(wallet, market, outcome)
+    """P0 ledger (audit 2026-05-13) — per-(wallet, market, outcome)
     resolution audit log. Used to dedup B22 runtime increments.
 
     Why a dedicated table instead of dedup-by-audit_at:

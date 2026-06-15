@@ -1,8 +1,8 @@
-"""M1 v4 — Anti-leakage temporal audit (review Round 7, 2026-05-12).
+"""M1 v4 — Anti-leakage temporal audit (Round 7 review, 2026-05-12).
 
 Builds on v3 (split metrics + SELL handling) and adds causal-time gates that
 v3 was missing. v3 produced a suspicious `edge_per_share_avg = +0.285$/share`
-with `bot_outperforms_pct = 78.7%`. review Round 7 challenged: a copy-trading
+with `bot_outperforms_pct = 78.7%`. The Round 7 review challenged: a copy-trading
 bot **cannot legitimately enter before its source wallet**. If forensic records
 show that pattern, either:
 

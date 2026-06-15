@@ -78,9 +78,6 @@ _backups_v0_7_8_dynamic_caps/
 backend/_backups_v0_7_8_smoke_pre/
 *.bak
 
-# Agent runtime state (not relevant for portability)
-.claude/
-
 # portfolio hygiene
 /.env
 data/

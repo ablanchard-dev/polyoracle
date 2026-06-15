@@ -33,7 +33,7 @@ class ExecutionEngine:
     def status(self) -> BotStatus:
         # P0.3 (2026-05-11): recompute paper_pnl on-read via PaperTradingEngine
         # to keep /bot/status coherent with /paper/report.
-        # P0.2 (2026-05-11 evening, review Round 4 feedback): same recompute
+        # P0.2 (2026-05-11 evening, Round 4 review feedback): same recompute
         # on-read for open_positions + exposure + active_signals. BotState
         # values are stale cache, DB is truth. CRITICAL for live mode where
         # dashboard truth-source is non-negotiable.

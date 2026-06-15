@@ -14,7 +14,7 @@ Les métriques Phase B (PF, WR, DD, cadence, growth) DOIVENT utiliser
 EFFECTIVE_BASELINE_T0 comme référence, pas strict_cutover_at. Sinon les
 chiffres sont dilués par les 11h27 inutiles.
 
-Verbatim review Round 4 (2026-05-11 soir) :
+Spec (Round 4 review, 2026-05-11 soir) :
 > "redéfinir strict_effective_t0=2026-05-11T13:21Z — exclure les 11h cassées"
 > "Le smoke initial 01:54 → 13:21 ne compte pas pour la performance. Il
 >  compte seulement pour le diagnostic."

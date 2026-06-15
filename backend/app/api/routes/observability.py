@@ -185,7 +185,7 @@ def utilization_status(
 
 @router.get("/polling-errors")
 def polling_errors_classified(window_hours: float = 6.0) -> dict[str, Any]:
-    """P0.4 polling error classifier (review Round 4 — 2026-05-11).
+    """P0.4 polling error classifier (Round 4 review — 2026-05-11).
 
     Classifies errors from backend.dev.err.log into noise / transient / critical
     buckets. Surfaces signal_loss_estimated_pct + alerts for rate-limit /

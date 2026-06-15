@@ -391,7 +391,7 @@ def test_reclass_summary_md_includes_metrics():
 
 
 # === 2026-05-16 — Edge decay rolling check tests ===
-# spec.md règle 7 cascade étape 2 : auto-demote ELITE en edge decay.
+# Operator spec règle 7 cascade étape 2 : auto-demote ELITE en edge decay.
 
 def _make_elite_row(addr: str) -> MarketFirstWalletRecord:
     """ELITE with strong lifetime stats (W+L=120, WR=0.92)."""

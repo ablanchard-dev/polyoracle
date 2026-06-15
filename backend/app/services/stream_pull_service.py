@@ -63,7 +63,7 @@ DEFAULT_LIMIT = _env_int("STREAM_PULL_LIMIT", 1000)
 DEFAULT_INTERVAL_S = _env_int("STREAM_PULL_INTERVAL_S", 10)
 # Operator rule 2026-05-16 : skip trades older than this before dispatch.
 # Avoids polluting audit with STALE_SIGNAL_BACKFILL rejects. 90s aligns
-# with crypto-5min freshness threshold per spec.md.
+# with crypto-5min freshness threshold per the operator spec.
 DEFAULT_MAX_TRADE_AGE_S = _env_int("STREAM_PULL_MAX_TRADE_AGE_S", 90)
 HTTP_TIMEOUT_S = 8.0
 DEDUP_LRU_SIZE = 10_000

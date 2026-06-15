@@ -270,7 +270,7 @@ def compute_effective_paper_capital(session: Session, *, settings_fallback: floa
 
     P0.2 (Round 8 2026-05-12): the strict-mode branch was added to prevent
     the file T0 (possibly pre-dating the strict cutover) from leaking
-    pre-fix PnL into the tier resolution. Verbatim review Round 8:
+    pre-fix PnL into the tier resolution. Spec (Round 8 review):
     "compute_effective_paper_capital doit utiliser EFFECTIVE_BASELINE_T0
     quand PAPER_LIVE_STRICT=true. Ne plus utiliser T0_paper_72h si strict
     baseline existe."
@@ -351,7 +351,7 @@ def _apply_synth_exit_slippage(exit_price: float, trade_side: str) -> tuple[floa
 def _b22_runtime_update_mfwr_on_resolved_close(
     session: Session, trade: PaperTrade,
 ) -> None:
-    """Phase G ledger (Round 8 review audit, 2026-05-13) — single-market MFWR
+    """Phase G ledger (Round 8 audit, 2026-05-13) — single-market MFWR
     increment on RESOLVED close via dedicated dedup ledger.
 
     DEDUP via `WalletMarketResolutionAudit` (unique wallet+market+outcome):
@@ -552,14 +552,14 @@ def _close_paper_with_reason(
     session.commit()
     session.refresh(trade)
 
-    # Phase G HOTFIX (Round 8 review audit, 2026-05-13):
+    # Phase G HOTFIX (Round 8 audit, 2026-05-13):
     # B22 runtime hook DISABLED by default because the dedup logic is unsound.
     # The helper sets `mfwr.audit_at = now()` after processing ONE market,
     # which would render invisible all OTHER un-counted historical markets
     # (rmr.end_date <= audit_at filter excludes them from the next batch).
     #
     # Re-enable only after the WalletMarketResolutionAudit ledger is in place
-    # (unique(wallet, market, outcome) — see review audit verdict 2026-05-13).
+    # (unique(wallet, market, outcome) — see audit verdict 2026-05-13).
     # Until then, batch B22 (_b22_incremental_update.py) remains the source
     # of truth for MFWR refreshes.
     if reason == CLOSE_REASON_RESOLVED:

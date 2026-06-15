@@ -227,7 +227,7 @@ def test_b22_runtime_failure_does_not_crash_close(session, monkeypatch):
 
 
 # ============================================================
-# Phase G HOTFIX (Round 8 review audit 2026-05-13) — tests qui catch
+# Phase G HOTFIX (Round 8 audit 2026-05-13) — tests qui catch
 # le vrai bug : runtime processes ONE market, mais audit_at = now() rendrait
 # invisibles les autres markets non comptés. Test critique.
 # ============================================================
@@ -235,7 +235,7 @@ def test_b22_runtime_failure_does_not_crash_close(session, monkeypatch):
 
 def test_HOTFIX_runtime_must_not_invisibilize_uncounted_markets(session):
     """
-    BUG INITIAL (review audit 2026-05-13) :
+    BUG INITIAL (audit 2026-05-13) :
     Le helper runtime set `audit_at = now()` après processing UN seul market.
     Conséquence : tous les autres markets résolus entre l'ancien audit_at
     et now mais NON encore comptés deviennent invisibles pour le batch B22
@@ -288,7 +288,7 @@ def test_HOTFIX_runtime_must_not_invisibilize_uncounted_markets(session):
     assert audit_at_after is None or audit_at_after <= may01, (
         f"REGRESSION : audit_at={audit_at_after} > may01={may01} → market #1 "
         f"deviendra invisible pour le batch B22. C'est exactement le bug "
-        f"identifié par review 2026-05-13. Le runtime ne doit pas avancer "
+        f"identifié lors de la review 2026-05-13. Le runtime ne doit pas avancer "
         f"audit_at après processing d'un seul market — il faut un ledger."
     )
     assert audit_at_after is None or audit_at_after <= may07, (

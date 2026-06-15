@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     postgres_enabled: bool = False
     redis_enabled: bool = False
     paper_trading_enabled: bool = True
-    # 2026-05-14 — doctrine opérateur review Round 9 :
+    # 2026-05-14 — doctrine opérateur (Round 9 review) :
     # PAPER_LIVE_STRICT = vrai par défaut, inviolable en prod/VPS. Paper
     # applique EXACTEMENT les mêmes gates que live (spread/liquidity/
     # orderbook/copyable_edge/unknown-category). Le bypass orderbook dans

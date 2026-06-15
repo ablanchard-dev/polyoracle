@@ -5,7 +5,7 @@ Compute per-wallet weight for use as:
   Phase 2: light sizing multiplier R × weight, clamp [0.75R, 1.25R]
   Phase 3: wider clamp [0.5R, 1.5R] after 1000+ confirmed trades
 
-Formula (locked 2026-05-11 by Round 2 review tranchage):
+Formula (locked 2026-05-11 by the Round 2 review tranchage):
 
   raw = 0.35 × long_prior_WR_lower_bound
       + 0.25 × EWMA_14d_PnL_per_trade

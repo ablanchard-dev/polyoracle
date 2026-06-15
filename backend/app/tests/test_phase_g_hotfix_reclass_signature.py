@@ -1,4 +1,4 @@
-"""Phase G HOTFIX — auto-reclass daily signature (review audit 2026-05-13).
+"""Phase G HOTFIX — auto-reclass daily signature (audit 2026-05-13).
 
 The main.py @startup task previously called `run_weekly_reclass(session,
 dry_run=False)`. Service signature requires `db_path` + `backup_dir`. The

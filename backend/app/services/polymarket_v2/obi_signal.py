@@ -3,7 +3,7 @@
 Formule : OBI_t = (bid_topN_qty - ask_topN_qty) / (bid_topN_qty + ask_topN_qty)
 Source : Cont, Stoikov, Talreja (2014) — "A Stochastic Model for Order Book Dynamics"
 Référence Polymarket : OBI > 0.65 prédit direction 15-30min, ~58% accuracy
-(cf https://www.emergentmind.com/topics/order-book-imbalance-obi)
+(cf. la littérature sur l'order-book imbalance / OBI comme signal de flux)
 
 Data source : CLOB API GET https://clob.polymarket.com/book?token_id=<token_id>
 Cache 30s par token_id pour éviter de spammer l'API.

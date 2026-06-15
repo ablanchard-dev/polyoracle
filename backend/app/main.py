@@ -51,7 +51,7 @@ async def on_startup() -> None:
     except Exception:
         pass
 
-    # Phase G HOTFIX (Round 8 review audit, 2026-05-13):
+    # Phase G HOTFIX (Round 8 review, 2026-05-13):
     # Auto-reclass daily — signature corrigée. run_weekly_reclass exige
     # db_path + backup_dir en kwargs. Pré-hotfix l'appel était `(session,
     # dry_run=False)` → TypeError silencieuse, cron tournait à vide.
