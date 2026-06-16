@@ -26,7 +26,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="POLYORACLE API",
-    version="0.5.4",
+    version="0.7.9",
     description="Smart-money audit bot for Polymarket. Local-first, observe massively, trade only the best signals.",
 )
 

@@ -81,7 +81,7 @@ class BotLoop:
         if mode not in BOT_MODES:
             raise ValueError(f"Unknown mode {mode}")
         if mode == "LIVE":
-            raise PermissionError("LIVE mode is intentionally disabled in v0.4")
+            raise PermissionError("LIVE mode is intentionally disabled in v0.7.9")
         state = self._state()
         state.mode = mode
         if mode == "OFF":

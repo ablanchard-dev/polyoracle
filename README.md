@@ -91,7 +91,7 @@ Modes:
 
 - `OFF`: nothing runs except health/status.
 - `RESEARCH`: read-only analysis (default).
-- `PAPER`: simulated execution. Auto paper trades only when wallet tier ≥ STRONG, signal decision = PAPER_TRADE, copyable edge, spread, orderbook quality and exposure all pass.
+- `PAPER`: simulated execution. Auto paper trades require wallet tier ≥ STRONG, signal decision = PAPER_TRADE, and the copyable-edge, spread, orderbook-quality and exposure gates. One exception: ELITE wallets in paper mode skip the data-quality gates (spread, liquidity, orderbook) because crypto 5-min markets often have no public CLOB orderbook, so those scores are unreliable. Set `PAPER_LIVE_STRICT=true` (`capital_allocator.py`) to disable that bypass and apply the exact same gates as live. Live always enforces every gate.
 - `SEMI_AUTO`: future proposal mode with human validation.
 - `LIVE`: disabled by default. The BotLoop refuses `LIVE`. ExecutionEngine still requires compliance + manual confirmation.
 
@@ -145,7 +145,7 @@ Open:
 
 - Dashboard: `http://localhost:3000`
 - API: `http://localhost:8000`
-- Health: `http://localhost:8000/health` → `{"status":"ok","version":"0.4.0"}`
+- Health: `http://localhost:8000/health` → `{"status":"ok","version":"0.7.9"}`
 
 ## v0.5.3 / v0.5.4 — strict ELITE rule + ValidatedPaperUniverse
 
