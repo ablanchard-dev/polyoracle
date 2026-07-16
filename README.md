@@ -97,6 +97,18 @@ Modes:
 
 There is no VPN, bypass, geographic circumvention or hard-coded private key logic.
 
+## Run With Docker
+
+```bash
+docker compose up --build          # backend :8000 (+ postgres, redis), frontend :3000
+curl http://localhost:8000/health
+```
+
+No `.env` is needed to start: the compose file sets the database and Redis URLs, and
+`.env` (gitignored) only overrides them. Copy `.env.example` to `.env` if you want to
+tune the paper configuration. CI brings this stack up from a clean checkout on every
+push, so the quickstart above is tested rather than assumed.
+
 ## Run Locally Without Docker
 
 Fast Windows start:

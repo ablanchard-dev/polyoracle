@@ -34,3 +34,20 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stack comes up from a fresh clone, without a .env
+        # Le point du test : un clone neuf n'a pas de .env. On ne le cree pas ici,
+        # sinon on ne testerait pas ce que vit la personne qui clone le repo.
+        run: |
+          docker compose up -d --build backend
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:8000/health >/dev/null && break || sleep 2
+          done
+          curl -sf http://localhost:8000/health
+          docker compose down -v
+      - name: Frontend image builds
+        run: docker compose build frontend

@@ -23,8 +23,12 @@ services:
   backend:
     build:
       context: ./backend
+    # .env n'est pas versionne (secrets) : sans required=false, un clone neuf echoue
+    # sur "env file not found" des le premier `docker compose up`. Les valeurs utiles
+    # au demarrage sont dans le bloc environment ci-dessous ; .env ne fait que surcharger.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://polyoracle:polyoracle@postgres:5432/polyoracle
       REDIS_URL: redis://redis:6379/0
