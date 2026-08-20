@@ -141,6 +141,43 @@ def test_startup_refuses_db_without_mfwr():
             db_mod.database_url = original_url
 
 
+def test_startup_refuses_a_PARTIALLY_seeded_db():
+    """Le cas entre les deux : la table existe, elle a des lignes, mais PAS ASSEZ.
+
+    Les tests voisins couvrent 0 ligne (refus) et >= 100 (acceptation). Le pool
+    PARTIEL -- une base a moitie chargee, ou pointant sur le mauvais snapshot --
+    n'etait couvert par aucun test, alors que c'est l'etat que le garde-fou existe
+    precisement pour attraper. Il l'est ici, sans dependre de la base reelle de la
+    machine : le canari tient meme la ou `test_real_polyoracle_db_passes_guard`
+    se met en skip (install fraiche non seedee).
+    """
+    import app.database as db_mod
+    import app.config as cfg_mod
+
+    original_engine = db_mod.engine
+    original_url = db_mod.database_url
+    test_engine = create_engine("sqlite://")
+    _seed_mfwr_rows(test_engine, 50)  # sous le seuil de 100
+
+    db_mod.engine = test_engine
+    db_mod.database_url = "sqlite://"
+    fake_path = Path("data/polyoracle.db")
+    with patch.object(
+        type(cfg_mod.get_settings()),
+        "resolved_sqlite_path",
+        new_callable=lambda: property(lambda self: fake_path),
+    ):
+        try:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("DATABASE_URL", None)
+                from app.database import _validate_database_url
+                with pytest.raises(RuntimeError, match=r"only 50 rows"):
+                    _validate_database_url()
+        finally:
+            db_mod.engine = original_engine
+            db_mod.database_url = original_url
+
+
 def test_startup_accepts_valid_polyoracle_db():
     """A SQLite with >= 100 MFWR rows under a clean path must validate."""
     import app.database as db_mod
@@ -198,6 +235,24 @@ def test_real_polyoracle_db_passes_guard():
     real_db = project_root / "data" / "polyoracle.db"
     if not real_db.exists():
         pytest.skip("real polyoracle.db not present (CI env?)")
+
+    # Le skip ci-dessus couvre "pas de fichier". Il ne couvrait PAS "fichier cree
+    # mais jamais peuple" -- l'etat exact d'une install fraiche ou l'appli a tourne
+    # une fois : la base existe, vide, et ce canari passait au rouge alors que rien
+    # n'a derive. Une base VIDE veut dire "pas encore seedee", pas "mauvaise base" ;
+    # un pool PARTIEL, lui, reste une vraie alerte et continue d'echouer.
+    import sqlite3
+    try:
+        with sqlite3.connect(f"file:{real_db}?mode=ro", uri=True) as _c:
+            _n = _c.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' "
+                "AND name='marketfirstwalletrecord'").fetchone()[0]
+            _rows = _c.execute(
+                "SELECT count(*) FROM marketfirstwalletrecord").fetchone()[0] if _n else 0
+    except sqlite3.Error:
+        _rows = 0
+    if _rows == 0:
+        pytest.skip("polyoracle.db present but empty (fresh install, not seeded yet)")
 
     # Reset env to be safe
     with patch.dict(os.environ, {}, clear=False):

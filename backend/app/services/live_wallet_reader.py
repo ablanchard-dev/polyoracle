@@ -108,12 +108,20 @@ class LiveWalletReader:
         if not self._ensure_initialized():
             return None
 
+        # L'import vit hors du try qui suit : une librairie absente n'est PAS une panne
+        # d'API. Les confondre faisait retourner None avant meme d'appeler le client, ce
+        # qui rendait verts sans rien prouver les tests "reponse invalide" et "exception".
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
-            ba = self._client.get_balance_allowance(
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-            )
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        except ImportError:
+            # py_clob_client absent : il n'y a alors aucun vrai client (_ensure_initialized
+            # en depend), donc seul un client injecte peut arriver ici. Il n'utilise pas params.
+            params = None
+
+        try:
+            ba = self._client.get_balance_allowance(params)
             raw = ba.get("balance") if isinstance(ba, dict) else None
             if raw is None:
                 logger.warning("LiveWalletReader: no balance field in CLOB response: %r", ba)
