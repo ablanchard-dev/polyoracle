@@ -136,9 +136,10 @@ def init_db() -> None:
                 ))
         except Exception:
             pass  # table may not exist yet on fresh DB or migrations
-    # v0.7.5 — run guard AFTER schema creation so a fresh install
-    # (zero MFWR rows) doesn't fail validation; it'll only trigger
-    # when an existing wrong-project DB is mounted.
+    # v0.7.5 — run guard AFTER schema creation. On SQLite this REFUSES an
+    # empty pool too (0 MFWR rows, see test_startup_refuses_db_without_mfwr):
+    # a local run needs the seeded wallet pool. Postgres (Docker) skips the
+    # row-count check, which is why a fresh `docker compose up` starts.
     _validate_database_url()
 
 
