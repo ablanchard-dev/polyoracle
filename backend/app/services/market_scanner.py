@@ -36,10 +36,14 @@ class MarketScanner:
             self.upsert_markets(markets)
             return markets
         except Exception as exc:
+            if not self.settings.mock_data_enabled:
+                # Mocks disabled means no fake markets, even on an outage: surface the
+                # failure instead of mixing mock rows into the real markets table.
+                logger.error("Gamma API failure and mock fallback disabled: %s", exc)
+                raise
             logger.warning("Falling back to mock markets after Gamma API failure: %s", exc)
             markets = mock_markets()
-            if self.settings.mock_data_enabled:
-                self.save_market_snapshot(markets, source="mock_fallback")
+            self.save_market_snapshot(markets, source="mock_fallback")
             self.upsert_markets(markets)
             return markets
 
