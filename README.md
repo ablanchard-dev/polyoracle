@@ -76,6 +76,12 @@ API outage with mock data disabled raises instead of writing fake markets.
   52 ELITE after out-of-sample validation) come from a local database that is not in
   the repository, so they cannot be reproduced from a clone. Details in
   [docs/HISTORY.md](docs/HISTORY.md).
+- **Paper PnL on unresolved markets is not marked to market.** The close loop that runs
+  closes resolved markets at 1.0 / 0.0, but it is called without a price source: a
+  position still open after 24 h on an unresolved market is closed at its entry price
+  (only synthetic fees and slippage apply), and the take-profit / stop-loss rules never
+  fire in the bot loop. Only resolved markets carry a real result. Wiring a mark price
+  from the CLOB was not possible here (Polymarket is not reachable from France).
 - No live trading, by design, until 30+ days of paper results show positive
   expectancy after spread and slippage.
 
