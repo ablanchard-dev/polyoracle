@@ -107,7 +107,7 @@ export default function ObservabilityPage() {
         ) : (
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="bg-gray-100 dark:bg-gray-800">
+              <tr className="bg-gray-800">
                 <th className="text-left px-3 py-2">Path</th>
                 <th className="text-right px-3 py-2">N</th>
                 <th className="text-right px-3 py-2">p50 (ms)</th>
@@ -146,15 +146,15 @@ export default function ObservabilityPage() {
         <h2 className="text-xl font-semibold mb-3">Adaptive close-loop</h2>
         {scheduler && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500">Registered positions</div>
               <div className="text-2xl font-mono">{scheduler.registered_positions}</div>
             </div>
-            <div className="rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500">Heap size</div>
               <div className="text-2xl font-mono">{scheduler.heap_size}</div>
             </div>
-            <div className="col-span-2 md:col-span-2 rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="col-span-2 md:col-span-2 rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500 mb-1">Bucket intervals</div>
               <div className="text-xs font-mono space-y-1">
                 {Object.entries(scheduler.bucket_intervals_s).map(([k, v]) => (
@@ -173,17 +173,17 @@ export default function ObservabilityPage() {
         <h2 className="text-xl font-semibold mb-3">Market metadata resolver cache</h2>
         {resolver && (
           <div className="grid grid-cols-3 gap-3">
-            <div className="rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500">Static cache</div>
               <div className="text-2xl font-mono">{resolver.static_cache_size}</div>
               <div className="text-xs text-gray-500">TTL {resolver.ttl.static_s}s</div>
             </div>
-            <div className="rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500">Dynamic cache</div>
               <div className="text-2xl font-mono">{resolver.dynamic_cache_size}</div>
               <div className="text-xs text-gray-500">TTL {resolver.ttl.dynamic_s}s</div>
             </div>
-            <div className="rounded-lg bg-gray-100 dark:bg-gray-800 p-3">
+            <div className="rounded-lg bg-gray-800 p-3">
               <div className="text-xs text-gray-500">NOT_FOUND blacklist</div>
               <div className="text-2xl font-mono">{resolver.not_found_blacklist_size}</div>
               <div className="text-xs text-gray-500">TTL {resolver.ttl.not_found_s}s</div>
