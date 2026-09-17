@@ -40,3 +40,21 @@ def test_bot_loop_rejects_live_mode() -> None:
             assert "LIVE" in str(exc)
         else:
             raise AssertionError("LIVE mode must be blocked")
+
+
+def test_bot_loop_keeps_every_stage_error_not_only_the_last() -> None:
+    # Market scan down AND wallet audit down in the same cycle: last_error used to
+    # keep only "wallet_audit", hiding the root cause (the API outage).
+    engine = _engine()
+    with Session(engine) as session:
+        loop = BotLoop(session)
+        loop.set_mode("RESEARCH")
+        loop.start()
+        loop.market_scanner.fetch_active_markets = lambda: (_ for _ in ()).throw(RuntimeError("gamma down"))
+        def _audit_down(limit):
+            raise RuntimeError("data api down")
+        loop.smart_wallet_auditor.audit_wallet_batch = _audit_down
+        loop.run_once(force=True)
+        err = loop._state().last_error
+    assert "market_scan: gamma down" in err
+    assert "wallet_audit: data api down" in err

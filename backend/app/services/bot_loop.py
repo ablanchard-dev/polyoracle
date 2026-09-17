@@ -155,7 +155,7 @@ class BotLoop:
         signals_generated = 0
         paper_trades_opened = 0
         rejected_signals = 0
-        last_error: str | None = None
+        errors: list[str] = []  # every failed stage, in order: the first is usually the root cause
         rejection_reasons: Counter[str] = Counter()
 
         logger.info("cycle started, mode=%s", state.mode)
@@ -166,8 +166,8 @@ class BotLoop:
             markets_scanned = len(markets)
             logger.info("markets fetched: %d", markets_scanned)
         except Exception as exc:
-            last_error = f"market_scan: {exc}"
-            logger.warning(last_error)
+            errors.append(f"market_scan: {exc}")
+            logger.warning(errors[-1])
 
         # 2. Wallet audit (limited per cycle)
         try:
@@ -175,8 +175,8 @@ class BotLoop:
             wallets_audited = len(audits)
             logger.info("wallets audited: %d", wallets_audited)
         except Exception as exc:
-            last_error = f"wallet_audit: {exc}"
-            logger.warning(last_error)
+            errors.append(f"wallet_audit: {exc}")
+            logger.warning(errors[-1])
 
         # 3. Trade audit
         audit_records: list[TradeAuditRecord] = []
@@ -186,8 +186,8 @@ class BotLoop:
                 trades_audited = len(audit_results)
                 logger.info("trades audited: %d", trades_audited)
         except Exception as exc:
-            last_error = f"trade_audit: {exc}"
-            logger.warning(last_error)
+            errors.append(f"trade_audit: {exc}")
+            logger.warning(errors[-1])
 
         # 4. Signal generation from audits + clusters
         signals: list[Signal] = []
@@ -198,8 +198,8 @@ class BotLoop:
             signals_generated = len(signals)
             logger.info("signals generated: %d", signals_generated)
         except Exception as exc:
-            last_error = f"signals: {exc}"
-            logger.warning(last_error)
+            errors.append(f"signals: {exc}")
+            logger.warning(errors[-1])
 
         # Build a lookup of latest TradeAuditRecord per signal so we can feed real context
         audit_by_signal_id = self._build_audit_lookup(signals)
@@ -226,16 +226,18 @@ class BotLoop:
                 except Exception as exc:
                     rejected_signals += 1
                     rejection_reasons["EXCEPTION"] += 1
-                    last_error = f"paper_auto: {exc}"
-                    logger.warning(last_error)
+                    errors.append(f"paper_auto: {exc}")
+                    logger.warning(errors[-1])
 
         # 6. Position evaluation
         try:
             self.paper_trading_engine.evaluate_open_positions()
         except Exception as exc:
-            last_error = f"position_eval: {exc}"
+            errors.append(f"position_eval: {exc}")
+            logger.warning(errors[-1])
 
         elapsed_ms = round((monotonic() - started) * 1000, 2)
+        last_error = " | ".join(errors) or None
         state = self._state()
         state.last_cycle_at = datetime.now(UTC)
         state.last_cycle_duration_ms = elapsed_ms
