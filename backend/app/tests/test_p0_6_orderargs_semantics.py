@@ -28,10 +28,18 @@ from app.services.clob_executor import (
 # py_clob_client_v2 MarketOrderArgsV2 path (the phantom SDK — see clob_executor.py),
 # so these tests can't pass until that path is rebuilt on a real SDK. Kept as the
 # standing record that live-v2 dropped this guardrail; un-skip when live is rebuilt.
+# 18/09/2026 — la raison affichee disait « guardrail preserved », trois lignes sous un
+# commentaire qui dit l'inverse : « live-v2 DROPPED this guardrail ». C'est la raison que
+# `pytest -rs` imprime, donc la seule que quelqu'un lit — et elle rassurait a tort.
+# Le garde-fou n'est pas preserve : il est ABSENT du chemin live, qui n'existe pas encore.
+# Ce que la suite verifie en attendant : que ce chemin reste inatteignable
+# (`test_le_chemin_live_reste_inatteignable`), de sorte que personne ne puisse le rebrancher
+# sans que ce trou se rappelle a lui.
 pytestmark = pytest.mark.skip(
-    reason="live-v2 replaced tested OrderArgs.size path with the undelivered "
-    "py_clob_client_v2 MarketOrderArgsV2 path; guardrail preserved, un-skip when "
-    "the live path is rebuilt on a real SDK."
+    reason="GARDE-FOU ABSENT sur le chemin live : live-v2 a remplace OrderArgs.size par "
+    "py_clob_client_v2.MarketOrderArgsV2, un SDK jamais livre. Ces tests ne peuvent pas "
+    "passer tant que ce chemin n'est pas reecrit sur un vrai SDK — et il DOIT l'etre avant "
+    "tout passage en live, sinon un size=5 @ $0.10 envoie $0.50 au lieu de $5."
 )
 
 
