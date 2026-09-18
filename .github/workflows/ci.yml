@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+permissions:
+  # Aucun de ces travaux n'ecrit dans le depot : ils installent, lancent les tests, et
+  # s'arretent la. Sans ce bloc, le jeton herite du DEFAUT du depot — invisible ici, et
+  # qui redevient 'write' a une bascule d'organisation, un transfert ou un fork. Un
+  # workflow doit porter ses droits, pas dependre d'un reglage qu'on ne voit pas en le
+  # lisant. (CodeQL, 18/09/2026 : actions/missing-workflow-permissions)
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
