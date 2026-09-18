@@ -25,8 +25,10 @@ public Polymarket data (Gamma, CLOB, Data API)
   -> paper trading engine        simulated fills, positions, PnL, no-trade log
 ```
 
-About 33k lines of Python (FastAPI + SQLModel) behind a Next.js dashboard (markets,
-wallets, signals, paper trades, control panel).
+About 36k lines of Python (FastAPI + SQLModel, tests excluded — 54k with them) behind a
+Next.js dashboard (markets, wallets, signals, paper trades, control panel). A test keeps that
+figure an honest order of magnitude: it is derived from the tree, not typed in, and fails once
+the published number drifts more than a quarter away from what the repo actually holds.
 
 ## Safety
 
