@@ -22,6 +22,7 @@ from app.models.wallet import (
 from app.services.mock_data import mock_wallets
 from app.services.polymarket.data_client import DataClient
 from app.storage.file_storage import FileStorage
+from app.api.erreurs import erreur_opaque
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +388,8 @@ class SmartWalletAuditor:
             return {"address": address, "positions": positions, "data_source": "polymarket_data"}
         except Exception as exc:
             logger.warning("Public profile fetch failed for %s: %s", address, exc)
-            return {"address": address, "data_source": "unavailable", "error": str(exc)}
+            return erreur_opaque(exc, logger, f"wallet audit for {address}",
+                                 address=address, data_source="unavailable")
 
     def fetch_wallet_recent_trades(self, address: str, limit: int | None = None) -> list[dict[str, Any]]:
         cap = limit or self.settings.max_wallet_trades_per_audit

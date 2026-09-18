@@ -11,6 +11,7 @@ from app.services.polymarket.clob_client import ClobPublicClient
 from app.services.polymarket.gamma_client import GammaClient
 from app.services.polymarket.normalizers import normalize_gamma_market
 from app.storage.file_storage import FileStorage
+from app.api.erreurs import erreur_opaque
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,8 @@ class MarketScanner:
                 self.file_storage._write_json("orderbooks", payload)
             return payload
         except Exception as exc:
-            logger.warning("CLOB orderbook failed for %s: %s", token_id, exc)
-            return {"token_id": token_id, "error": str(exc), "data_source": "clob_error"}
+            return erreur_opaque(exc, logger, f"CLOB orderbook for {token_id}",
+                                 token_id=token_id, data_source="clob_error")
 
     def fetch_first_market_orderbook(self, market_id: str) -> dict:
         market = self.fetch_market_details(market_id)

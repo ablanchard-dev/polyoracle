@@ -16,6 +16,13 @@ from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
 from app.database import get_session
+import logging
+
+from app.api.erreurs import erreur_opaque
+
+# Sans lui, `erreur_opaque` levait une NameError DANS le chemin d'erreur — trouve le
+# 18/09/2026 en executant l'import, pas en relisant : aucun test n'exerce ces except.
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
@@ -99,7 +106,7 @@ def workers_status() -> dict[str, Any]:
             }
         return result
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return erreur_opaque(exc, logger, "observability route")
 
 
 @router.get("/stream-pull")
@@ -143,7 +150,7 @@ def stream_pull_status() -> dict[str, Any]:
             "last_error": svc.last_error,
         }
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return erreur_opaque(exc, logger, "observability route")
 
 
 @router.get("/ws-activity")
@@ -165,7 +172,7 @@ def ws_activity_status() -> dict[str, Any]:
             }
         return {"enabled_flag": is_ws_activity_enabled(), **svc.get_stats()}
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return erreur_opaque(exc, logger, "observability route")
 
 
 @router.get("/utilization")
